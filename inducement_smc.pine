@@ -13,6 +13,7 @@ showSwings     = input.bool(true, "Show Swing Highs/Lows", group=groupDisplay)
 showBosChoch   = input.bool(true, "Show BOS / CHoCH", group=groupDisplay)
 showInduceLbl  = input.bool(true, "Show Inducement Labels", group=groupDisplay)
 showTargets    = input.bool(true, "Show TP / SL", group=groupDisplay)
+showDebug      = input.bool(false, "Show Debug Info (why signal blocked)", group=groupDisplay)
 
 groupSettings = "Swing / Structure Settings"
 swingLen      = input.int(5, "Swing Lookback", minval=1, group=groupSettings)
@@ -22,9 +23,8 @@ groupInduce = "Inducement Settings"
 useInducement = input.bool(true, "Detect Inducement", group=groupInduce)
 
 groupEntry = "Entry Settings"
-useFvg        = input.bool(true, "Use FVG Filter", group=groupEntry)
+filterMode    = input.string("None", "Signal Filter Mode", options=["None", "FVG only", "OB only", "FVG + OB"], group=groupEntry)
 fvgThreshold  = input.float(0.0, "Min FVG Size (pips)", minval=0.0, step=0.1, group=groupEntry)
-useOb         = input.bool(true, "Use Order Block Filter", group=groupEntry)
 obLookback    = input.int(5, "Order Block Lookback", minval=1, group=groupEntry)
 riskReward    = input.float(2.0, "Risk:Reward", minval=0.1, step=0.1, group=groupEntry)
 atrPeriod     = input.int(14, "ATR Period for SL", group=groupEntry)
@@ -39,6 +39,9 @@ maxSignals    = input.int(200, "Max Signals to Track", minval=10, group=groupWin
 // ═════════════════════════════════════════════════════════════════════════════
 pipFactor = syminfo.mintick * 10
 atr = ta.atr(atrPeriod)
+
+useFvg = filterMode == "FVG only" or filterMode == "FVG + OB"
+useOb  = filterMode == "OB only" or filterMode == "FVG + OB"
 
 // ═════════════════════════════════════════════════════════════════════════════
 // SWING POINTS
@@ -88,18 +91,14 @@ if bearishBos or bearishChoch
 // ═════════════════════════════════════════════════════════════════════════════
 var float induceHigh    = na
 var float induceLow     = na
-var int   induceHighBar = na
-var int   induceLowBar  = na
 
 induceSwingHigh = ta.pivothigh(high, induceSwingLen, induceSwingLen)
 induceSwingLow  = ta.pivotlow(low, induceSwingLen, induceSwingLen)
 
 if not na(induceSwingHigh)
-    induceHigh    := induceSwingHigh
-    induceHighBar := bar_index[induceSwingLen]
+    induceHigh := induceSwingHigh
 if not na(induceSwingLow)
-    induceLow    := induceSwingLow
-    induceLowBar := bar_index[induceSwingLen]
+    induceLow := induceSwingLow
 
 bullishInduce = useInducement and marketStructure == "bullish" and not na(induceLow[1]) and low < induceLow[1] and close > induceLow[1]
 bearishInduce = useInducement and marketStructure == "bearish" and not na(induceHigh[1]) and high > induceHigh[1] and close < induceHigh[1]
@@ -115,15 +114,10 @@ if not showOnlyEntries and showInduceLbl and bearishInduce
 bullFvg = low > high[2]
 bearFvg = high < low[2]
 
-bullFvgTop = bullFvg ? low : na
-bullFvgBot = bullFvg ? high[2] : na
-bearFvgTop = bearFvg ? low[2] : na
-bearFvgBot = bearFvg ? high : na
-
 fvgSizePips(x, y) => math.abs(x - y) / pipFactor
 
-bullFvgValid = useFvg ? bullFvg and fvgSizePips(bullFvgTop, bullFvgBot) >= fvgThreshold : true
-bearFvgValid = useFvg ? bearFvg and fvgSizePips(bearFvgTop, bearFvgBot) >= fvgThreshold : true
+bullFvgValid = useFvg ? bullFvg and fvgSizePips(low, high[2]) >= fvgThreshold : true
+bearFvgValid = useFvg ? bearFvg and fvgSizePips(high, low[2]) >= fvgThreshold : true
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ORDER BLOCK FILTER
@@ -154,6 +148,14 @@ shortEntry = bearishInduce and bearFvgValid and bearObValid and marketStructure 
 plotshape(longEntry, title="Buy", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, text="BUY", size=size.normal)
 plotshape(shortEntry, title="Sell", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, text="SELL", size=size.normal)
 
+// Debug labels
+if showDebug and bullishInduce and not longEntry
+    reason = not bullFvgValid ? "No FVG" : not bullObValid ? "No OB" : "?"
+    label.new(bar_index, low, reason, style=label.style_label_up, color=color.gray, textcolor=color.white, yloc=yloc.belowbar, size=size.small)
+if showDebug and bearishInduce and not shortEntry
+    reason = not bearFvgValid ? "No FVG" : not bearObValid ? "No OB" : "?"
+    label.new(bar_index, high, reason, style=label.style_label_down, color=color.gray, textcolor=color.white, yloc=yloc.abovebar, size=size.small)
+
 // ═════════════════════════════════════════════════════════════════════════════
 // STOP LOSS & TAKE PROFIT
 // ═════════════════════════════════════════════════════════════════════════════
@@ -179,8 +181,8 @@ if shortEntry and showTargets
 var array<float> entryPrices = array.new_float(0)
 var array<float> slPrices    = array.new_float(0)
 var array<float> tpPrices    = array.new_float(0)
-var array<int>   directions  = array.new_int(0)   // 1 = long, -1 = short
-var array<int>   outcomes    = array.new_int(0)   // 0 = open, 1 = win, -1 = loss
+var array<int>   directions  = array.new_int(0)
+var array<int>   outcomes    = array.new_int(0)
 
 addSignal(dir, entry, sl, tp) =>
     array.push(entryPrices, entry)
@@ -205,69 +207,69 @@ if shortEntry
     tp = close - (sl - close) * riskReward
     addSignal(-1, close, sl, tp)
 
-// Check outcomes for open signals
 size = array.size(entryPrices)
-for i = 0 to size - 1
-    if array.get(outcomes, i) == 0
-        dir = array.get(directions, i)
-        sl  = array.get(slPrices, i)
-        tp  = array.get(tpPrices, i)
-        if dir == 1
-            if low <= sl
-                array.set(outcomes, i, -1)
-            else if high >= tp
-                array.set(outcomes, i, 1)
-        else
-            if high >= sl
-                array.set(outcomes, i, -1)
-            else if low <= tp
-                array.set(outcomes, i, 1)
+if size > 0
+    for i = 0 to size - 1
+        if array.get(outcomes, i) == 0
+            dir = array.get(directions, i)
+            sl  = array.get(slPrices, i)
+            tp  = array.get(tpPrices, i)
+            if dir == 1
+                if low <= sl
+                    array.set(outcomes, i, -1)
+                else if high >= tp
+                    array.set(outcomes, i, 1)
+            else
+                if high >= sl
+                    array.set(outcomes, i, -1)
+                else if low <= tp
+                    array.set(outcomes, i, 1)
 
-// Calculate stats
-longWins   = 0
-longLosses = 0
-shortWins  = 0
-shortLosses= 0
-longWinPips= 0.0
-longLossPips=0.0
-shortWinPips=0.0
+longWins    = 0
+longLosses  = 0
+shortWins   = 0
+shortLosses = 0
+longWinPips = 0.0
+longLossPips= 0.0
+shortWinPips= 0.0
 shortLossPips=0.0
 
-for i = 0 to size - 1
-    dir = array.get(directions, i)
-    out = array.get(outcomes, i)
-    entry = array.get(entryPrices, i)
-    sl = array.get(slPrices, i)
-    tp = array.get(tpPrices, i)
-    if out == 1
-        if dir == 1
-            longWins += 1
-            longWinPips += (tp - entry) / pipFactor
-        else
-            shortWins += 1
-            shortWinPips += (entry - tp) / pipFactor
-    else if out == -1
-        if dir == 1
-            longLosses += 1
-            longLossPips += (entry - sl) / pipFactor
-        else
-            shortLosses += 1
-            shortLossPips += (sl - entry) / pipFactor
+if size > 0
+    for i = 0 to size - 1
+        dir = array.get(directions, i)
+        out = array.get(outcomes, i)
+        entry = array.get(entryPrices, i)
+        sl = array.get(slPrices, i)
+        tp = array.get(tpPrices, i)
+        if out == 1
+            if dir == 1
+                longWins += 1
+                longWinPips += (tp - entry) / pipFactor
+            else
+                shortWins += 1
+                shortWinPips += (entry - tp) / pipFactor
+        else if out == -1
+            if dir == 1
+                longLosses += 1
+                longLossPips += (entry - sl) / pipFactor
+            else
+                shortLosses += 1
+                shortLossPips += (sl - entry) / pipFactor
 
-longTotal   = longWins + longLosses
-shortTotal  = shortWins + shortLosses
-totalWins   = longWins + shortWins
-totalLosses = longLosses + shortLosses
-total       = totalWins + totalLosses
+longTotal    = longWins + longLosses
+shortTotal   = shortWins + shortLosses
+totalWins    = longWins + shortWins
+totalLosses  = longLosses + shortLosses
+total        = totalWins + totalLosses
 
 longWinrate  = longTotal > 0 ? (longWins / longTotal) * 100 : 0.0
 shortWinrate = shortTotal > 0 ? (shortWins / shortTotal) * 100 : 0.0
 totalWinrate = total > 0 ? (totalWins / total) * 100 : 0.0
 
-avgLongWin  = longWins > 0 ? longWinPips / longWins : 0.0
-avgLongLoss = longLosses > 0 ? longLossPips / longLosses : 0.0
-avgShortWin = shortWins > 0 ? shortWinPips / shortWins : 0.0
-avgShortLoss= shortLosses > 0 ? shortLossPips / shortLosses : 0.0
+avgLongWin   = longWins > 0 ? longWinPips / longWins : 0.0
+avgLongLoss  = longLosses > 0 ? longLossPips / longLosses : 0.0
+avgShortWin  = shortWins > 0 ? shortWinPips / shortWins : 0.0
+avgShortLoss = shortLosses > 0 ? shortLossPips / shortLosses : 0.0
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ALERTS
@@ -278,7 +280,8 @@ alertcondition(shortEntry, title="Short Entry", message="Inducement Short on {{t
 // ═════════════════════════════════════════════════════════════════════════════
 // INFO PANEL
 // ═════════════════════════════════════════════════════════════════════════════
-var table infoPanel = table.new(position.top_right, 2, 12, bgcolor=color.black, border_width=1, frame_color=color.gray, frame_width=1)
+tableRows = showWinrate ? 12 : 4
+var table infoPanel = table.new(position.top_right, 2, tableRows, bgcolor=color.black, border_width=1, frame_color=color.gray, frame_width=1)
 if barstate.islast
     table.cell(infoPanel, 0, 0, "Structure", text_color=color.white, text_size=size.small)
     table.cell(infoPanel, 1, 0, marketStructure, text_color=marketStructure == "bullish" ? color.green : marketStructure == "bearish" ? color.red : color.gray, text_size=size.small)
@@ -298,14 +301,12 @@ if barstate.islast
         table.cell(infoPanel, 1, 5, str.tostring(avgLongWin, "#.##") + " p", text_color=color.green, text_size=size.small)
         table.cell(infoPanel, 0, 6, "Long Avg Loss", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 6, str.tostring(avgLongLoss, "#.##") + " p", text_color=color.red, text_size=size.small)
-        
         table.cell(infoPanel, 0, 7, "Short WR", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 7, str.tostring(shortWinrate, "#.##") + "% (" + str.tostring(shortWins) + "/" + str.tostring(shortTotal) + ")", text_color=color.red, text_size=size.small)
         table.cell(infoPanel, 0, 8, "Short Avg Win", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 8, str.tostring(avgShortWin, "#.##") + " p", text_color=color.green, text_size=size.small)
         table.cell(infoPanel, 0, 9, "Short Avg Loss", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 9, str.tostring(avgShortLoss, "#.##") + " p", text_color=color.red, text_size=size.small)
-        
         table.cell(infoPanel, 0, 10, "Total WR", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 10, str.tostring(totalWinrate, "#.##") + "%", text_color=totalWinrate >= 50 ? color.green : color.red, text_size=size.small)
         table.cell(infoPanel, 0, 11, "Open Trades", text_color=color.white, text_size=size.small)
