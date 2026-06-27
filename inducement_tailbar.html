@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inducement гэж юу вэ? — Indicator тайлбар</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e6e6e6;
+            line-height: 1.8;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        }
+        h1 {
+            color: #00d4ff;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            text-align: center;
+            color: #8892b0;
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+        h2 {
+            color: #64ffda;
+            margin-top: 35px;
+            margin-bottom: 15px;
+            font-size: 1.6em;
+            border-bottom: 2px solid rgba(100, 255, 218, 0.3);
+            padding-bottom: 10px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            border-left: 4px solid #00d4ff;
+        }
+        .card.bullish {
+            border-left-color: #00ff88;
+        }
+        .card.bearish {
+            border-left-color: #ff4757;
+        }
+        .card.warning {
+            border-left-color: #ffa502;
+        }
+        .step {
+            display: flex;
+            align-items: flex-start;
+            margin: 15px 0;
+        }
+        .step-number {
+            background: #00d4ff;
+            color: #1a1a2e;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-right: 15px;
+            flex-shrink: 0;
+        }
+        .condition-list {
+            list-style: none;
+        }
+        .condition-list li {
+            padding: 12px 0 12px 35px;
+            position: relative;
+        }
+        .condition-list li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #00ff88;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .highlight {
+            background: rgba(0, 212, 255, 0.15);
+            padding: 2px 8px;
+            border-radius: 5px;
+            color: #00d4ff;
+            font-weight: 600;
+        }
+        .example {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+        }
+        .flow {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 25px 0;
+        }
+        .flow-box {
+            background: rgba(0, 212, 255, 0.2);
+            border: 1px solid #00d4ff;
+            border-radius: 10px;
+            padding: 15px 20px;
+            text-align: center;
+            min-width: 140px;
+        }
+        .flow-arrow {
+            color: #00d4ff;
+            font-size: 1.5em;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #8892b0;
+            font-size: 0.9em;
+        }
+        code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Inducement гэж юу вэ?</h1>
+        <p class="subtitle">Smart Money Concepts (SMC) / ICT арилжааны стратегийн тайлбар</p>
+
+        <div class="card">
+            <h2>🎯 Inducement-ийн товч утга</h2>
+            <p>
+                <span class="highlight">Inducement</span> гэдэг нь зах зээлийн том тоглогчид (smart money) бага арилжаачдыг 
+                алдагдалд оруулахын тулд богино хугацаанд хууран мэхэлж, дараа нь үнэ өөрсдийн жинхэнэ чиглэлдээ 
+                үргэлжлүүлэн хөдөлгөдөг үзэгдэл юм.
+            </p>
+            <p>
+                Өөрөөр хэлбэл: үнэ түр зуур өмнөх бага <strong>high/low</strong>-г эвдэж, арилжаачдыг өөр чиглэлд оруулж, 
+                дараа нь эргэж өмнөх чиглэлдээ хөдөлнө. Энэ нь жижиг арилжаачдын ликвидность (stop loss) "арчих" арга юм.
+            </p>
+        </div>
+
+        <h2>📊 Indicator яаж ажилладаг вэ?</h2>
+
+        <div class="flow">
+            <div class="flow-box">Market Structure<br><small>(BOS/CHoCH)</small></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-box">Inducement Sweep<br><small>(бага high/low эвдэх)</small></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-box">Баталгаа<br><small>(FVG + Order Block)</small></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-box">BUY/SELL<br><small>Signal</small></div>
+        </div>
+
+        <h2>📈 График дээрх жишээ</h2>
+
+        <div class="card bullish">
+            <h2>🟢 Long (BUY) оролтын жишээ</h2>
+            <p>Доорх график дээр үнэ түр зуур бага low-г доошоо эвдэж (inducement sweep), дараа нь дээшээ эргэж BUY signal өгсөн байна.</p>
+            <svg viewBox="0 0 700 350" style="width:100%; height:auto; background:#0f1419; border-radius:10px; margin:15px 0;">
+                <!-- Grid -->
+                <defs>
+                    <pattern id="grid" width="35" height="35" patternUnits="userSpaceOnUse">
+                        <path d="M 35 0 L 0 0 0 35" fill="none" stroke="#1a2332" stroke-width="1"/>
+                    </pattern>
+                </defs>
+                <rect width="700" height="350" fill="url(#grid)"/>
+
+                <!-- Price candles -->
+                <line x1="60" y1="280" x2="90" y2="270" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+                <line x1="90" y1="270" x2="120" y2="240" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+                <line x1="120" y1="240" x2="150" y2="260" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+                <line x1="150" y1="260" x2="180" y2="230" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+                <line x1="180" y1="230" x2="210" y2="200" stroke="#64ffda" stroke-width="3"/> <!-- bullish (BOS) -->
+                <line x1="210" y1="200" x2="240" y2="220" stroke="#ff4757" stroke-width="3"/> <!-- pullback -->
+                <line x1="240" y1="220" x2="270" y2="185" stroke="#ff4757" stroke-width="3"/> <!-- wick down (sweep) -->
+                <line x1="270" y1="185" x2="300" y2="170" stroke="#64ffda" stroke-width="4"/> <!-- bullish entry candle -->
+                <line x1="300" y1="170" x2="330" y2="150" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+                <line x1="330" y1="150" x2="360" y2="120" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+
+                <!-- Swing high/low points -->
+                <circle cx="60" cy="280" r="5" fill="#ff4757"/>
+                <text x="40" y="285" fill="#ff4757" font-size="12">SL</text>
+                <circle cx="120" cy="260" r="5" fill="#ff4757"/>
+                <circle cx="210" cy="200" r="6" fill="#64ffda"/>
+                <text x="195" y="190" fill="#64ffda" font-size="12" font-weight="bold">SH</text>
+                <circle cx="270" cy="185" r="5" fill="#ff4757"/>
+                <text x="250" y="180" fill="#ff4757" font-size="12">Ind</text>
+                <circle cx="300" cy="170" r="6" fill="#00ff88"/>
+                <text x="315" y="175" fill="#00ff88" font-size="14" font-weight="bold">BUY</text>
+
+                <!-- BOS line -->
+                <line x1="60" y1="260" x2="220" y2="260" stroke="#64ffda" stroke-width="1" stroke-dasharray="5,5"/>
+                <text x="225" y="265" fill="#64ffda" font-size="11">BOS</text>
+
+                <!-- Inducement level -->
+                <line x1="120" y1="260" x2="270" y2="260" stroke="#ffa502" stroke-width="1" stroke-dasharray="3,3"/>
+                <text x="275" y="265" fill="#ffa502" font-size="11">Inducement Level</text>
+
+                <!-- SL / TP -->
+                <line x1="300" y1="200" x2="420" y2="200" stroke="#ff4757" stroke-width="2" stroke-dasharray="5,5"/>
+                <text x="425" y="205" fill="#ff4757" font-size="12">SL</text>
+                <line x1="300" y1="90" x2="420" y2="90" stroke="#00ff88" stroke-width="2" stroke-dasharray="5,5"/>
+                <text x="425" y="95" fill="#00ff88" font-size="12">TP</text>
+
+                <!-- Arrow -->
+                <path d="M 360 150 L 400 120 L 390 118 L 395 108 L 405 122 L 392 128" fill="#64ffda"/>
+                <text x="410" y="115" fill="#64ffda" font-size="12">үргэлжлэл</text>
+
+                <!-- Axis labels -->
+                <text x="20" y="30" fill="#8892b0" font-size="12">үнэ ↑</text>
+                <text x="620" y="330" fill="#8892b0" font-size="12">хугацаа →</text>
+            </svg>
+            <ol class="condition-list">
+                <li>① Өмнөх <strong>swing low</strong> болон <strong>swing high</strong> үүссэн.</li>
+                <li>② Үнэ swing high-г эвдэж <strong>BOS</strong> өгч, bullish structure батлагдсан.</li>
+                <li>③ Үнэ буцаж бууж, бага swing low-г доошоо эвдэж <strong>inducement sweep</strong> хийсэн.</li>
+                <li>④ Дээшээ хаагдсан бөгөөд bullish FVG + OB баталгаатай <strong>BUY</strong> signal өгсөн.</li>
+                <li>⑤ SL inducement low-ын доор, TP 1:2 эсвэл 1:3 харьцаагаар тохируулна.</li>
+            </ol>
+        </div>
+
+        <div class="card bearish">
+            <h2>🔴 Short (SELL) оролтын жишээ</h2>
+            <p>Доорх график дээр үнэ түр зуур бага high-г дээшээ эвдэж (inducement sweep), дараа нь доошоо эргэж SELL signal өгсөн байна.</p>
+            <svg viewBox="0 0 700 350" style="width:100%; height:auto; background:#0f1419; border-radius:10px; margin:15px 0;">
+                <!-- Grid -->
+                <rect width="700" height="350" fill="url(#grid)"/>
+
+                <!-- Price candles -->
+                <line x1="60" y1="70" x2="90" y2="90" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+                <line x1="90" y1="90" x2="120" y2="120" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+                <line x1="120" y1="120" x2="150" y2="100" stroke="#64ffda" stroke-width="3"/> <!-- bullish -->
+                <line x1="150" y1="100" x2="180" y2="140" stroke="#ff4757" stroke-width="3"/> <!-- bearish (BOS) -->
+                <line x1="180" y1="140" x2="210" y2="170" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+                <line x1="210" y1="170" x2="240" y2="150" stroke="#64ffda" stroke-width="3"/> <!-- pullback -->
+                <line x1="240" y1="150" x2="270" y2="180" stroke="#64ffda" stroke-width="3"/> <!-- wick up (sweep) -->
+                <line x1="270" y1="180" x2="300" y2="200" stroke="#ff4757" stroke-width="4"/> <!-- bearish entry candle -->
+                <line x1="300" y1="200" x2="330" y2="230" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+                <line x1="330" y1="230" x2="360" y2="260" stroke="#ff4757" stroke-width="3"/> <!-- bearish -->
+
+                <!-- Swing high/low points -->
+                <circle cx="60" cy="70" r="5" fill="#64ffda"/>
+                <text x="35" y="75" fill="#64ffda" font-size="12">SH</text>
+                <circle cx="120" cy="120" r="5" fill="#64ffda"/>
+                <circle cx="180" cy="140" r="6" fill="#ff4757"/>
+                <text x="150" y="155" fill="#ff4757" font-size="12" font-weight="bold">SL</text>
+                <circle cx="270" cy="180" r="5" fill="#64ffda"/>
+                <text x="245" y="195" fill="#64ffda" font-size="12">Ind</text>
+                <circle cx="300" cy="200" r="6" fill="#ff4757"/>
+                <text x="315" y="205" fill="#ff4757" font-size="14" font-weight="bold">SELL</text>
+
+                <!-- BOS line -->
+                <line x1="60" y1="120" x2="190" y2="120" stroke="#ff4757" stroke-width="1" stroke-dasharray="5,5"/>
+                <text x="195" y="125" fill="#ff4757" font-size="11">BOS</text>
+
+                <!-- Inducement level -->
+                <line x1="120" y1="120" x2="270" y2="120" stroke="#ffa502" stroke-width="1" stroke-dasharray="3,3"/>
+                <text x="275" y="125" fill="#ffa502" font-size="11">Inducement Level</text>
+
+                <!-- SL / TP -->
+                <line x1="300" y1="170" x2="420" y2="170" stroke="#ff4757" stroke-width="2" stroke-dasharray="5,5"/>
+                <text x="425" y="175" fill="#ff4757" font-size="12">SL</text>
+                <line x1="300" y1="280" x2="420" y2="280" stroke="#00ff88" stroke-width="2" stroke-dasharray="5,5"/>
+                <text x="425" y="285" fill="#00ff88" font-size="12">TP</text>
+
+                <!-- Arrow -->
+                <path d="M 360 230 L 400 260 L 390 262 L 395 272 L 405 258 L 392 252" fill="#ff4757"/>
+                <text x="410" y="260" fill="#ff4757" font-size="12">үргэлжлэл</text>
+
+                <!-- Axis labels -->
+                <text x="20" y="30" fill="#8892b0" font-size="12">үнэ ↑</text>
+                <text x="620" y="330" fill="#8892b0" font-size="12">хугацаа →</text>
+            </svg>
+            <ol class="condition-list">
+                <li>① Өмнөх <strong>swing high</strong> болон <strong>swing low</strong> үүссэн.</li>
+                <li>② Үнэ swing low-г эвдэж <strong>BOS</strong> өгч, bearish structure батлагдсан.</li>
+                <li>③ Үнэ буцаж өсөж, бага swing high-г дээшээ эвдэж <strong>inducement sweep</strong> хийсэн.</li>
+                <li>④ Доошоо хаагдсан бөгөөд bearish FVG + OB баталгаатай <strong>SELL</strong> signal өгсөн.</li>
+                <li>⑤ SL inducement high-ын дээр, TP 1:2 эсвэл 1:3 харьцаагаар тохируулна.</li>
+            </ol>
+        </div>
+
+        <h2>✅ Signal өгөхийн өмнө биелэх нөхцөлүүд</h2>
+
+        <div class="card bullish">
+            <h2>🟢 Long (BUY) Signal-ийн нөхцөлүүд</h2>
+            <ol class="condition-list">
+                <li>
+                    <strong>Market Structure bullish байх</strong> — үнэ өмнөх swing high-г эвдэж дээшээ гарсан 
+                    (<span class="highlight">BOS</span> эсвэл <span class="highlight">CHoCH</span> үүссэн).
+                </li>
+                <li>
+                    <strong>Inducement sweep болох</strong> — үнэ бага swing low-г доошоо эвдэж, арилжаачдыг 
+                    sell-д оруулж, дараа нь дээшээ хаагдана.
+                </li>
+                <li>
+                    <strong>FVG (Fair Value Gap) баталгаа</strong> — bullish FVG (gap up) үүссэн байх.
+                </li>
+                <li>
+                    <strong>Order Block (OB) баталгаа</strong> — ойролцоо bullish order block байх.
+                </li>
+            </ol>
+            <div class="example">
+                low &lt; induceLow[1]  // өмнөх бага low-г доошоо эвдсэн<br>
+                close &gt; induceLow[1] // дээшээ хаагдсан<br>
+                bullish FVG үүссэн<br>
+                bullish OB ойролцоо байна
+            </div>
+        </div>
+
+        <div class="card bearish">
+            <h2>🔴 Short (SELL) Signal-ийн нөхцөлүүд</h2>
+            <ol class="condition-list">
+                <li>
+                    <strong>Market Structure bearish байх</strong> — үнэ өмнөх swing low-г эвдэж доошоо орсон 
+                    (<span class="highlight">BOS</span> эсвэл <span class="highlight">CHoCH</span> үүссэн).
+                </li>
+                <li>
+                    <strong>Inducement sweep болох</strong> — үнэ бага swing high-г дээшээ эвдэж, арилжаачдыг 
+                    buy-д оруулж, дараа нь доошоо хаагдана.
+                </li>
+                <li>
+                    <strong>FVG (Fair Value Gap) баталгаа</strong> — bearish FVG (gap down) үүссэн байх.
+                </li>
+                <li>
+                    <strong>Order Block (OB) баталгаа</strong> — ойролцоо bearish order block байх.
+                </li>
+            </ol>
+            <div class="example">
+                high &gt; induceHigh[1] // өмнөх бага high-г дээшээ эвдсэн<br>
+                close &lt; induceHigh[1] // доошоо хаагдсан<br>
+                bearish FVG үүссэн<br>
+                bearish OB ойролцоо байна
+            </div>
+        </div>
+
+        <h2>⚙️ Indicator-ийн үндсэн тохиргоонууд</h2>
+
+        <div class="card">
+            <h2>🔧 Swing / Structure Settings</h2>
+            <ul class="condition-list">
+                <li><strong>Swing Lookback:</strong> Том swing high/low таних барын тоо. Жишээ: <code>5</code></li>
+                <li><strong>Show Swing Highs/Lows:</strong> График дээр swing цэгүүдийг харуулах.</li>
+                <li><strong>Show BOS / CHoCH:</strong> Бүтцийн эвдэлтүүдийг харуулах.</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>🔧 Inducement Settings</h2>
+            <ul class="condition-list">
+                <li><strong>Detect Inducement:</strong> Inducement илрүүлэх ON/OFF.</li>
+                <li><strong>Inducement Swing Lookback:</strong> Бага swing high/low таних барын тоо. Жишээ: <code>3</code></li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>🔧 Entry Settings</h2>
+            <ul class="condition-list">
+                <li><strong>Use FVG Filter:</strong> Fair Value Gap шүүлтүүр ашиглах.</li>
+                <li><strong>Min FVG Size:</strong> Хамгийн бага FVG хэмжээ (pips).</li>
+                <li><strong>Use Order Block Filter:</strong> Order Block шүүлтүүр ашиглах.</li>
+                <li><strong>Risk:Reward:</strong> Ашиг алдагдлын харьцаа. Жишээ: <code>2.0</code></li>
+                <li><strong>ATR Multiplier:</strong> Stop loss-ийг ATR-ээс хэдэн дахин томруулах. Жишээ: <code>1.5</code></li>
+            </ul>
+        </div>
+
+        <h2>⚠️ Анхааруулга</h2>
+
+        <div class="card warning">
+            <p>
+                Энэ indicator нь зөвхөн <strong>аналитик хэрэгсэл</strong> юм. Ямар ч indicator 100% зөв биш.
+                Амьд арилжаанд оруулахын өмнө дараах зүйлсийг хийгээрэй:
+            </p>
+            <ul class="condition-list">
+                <li>Demo account дээр backtest хийх</li>
+                <li>Өөрийн risk management дүрэм баримтлах</li>
+                <li>Эдийн засгийн мэдээ, зах зээлийн нөхцөлийг харгалзах</li>
+                <li>Indicator-ийг бусад баталгаатай хослуулах</li>
+            </ul>
+        </div>
+
+        <div class="footer">
+            <p>© Inducement SMC Indicator — TradingView Pine Script v5</p>
+        </div>
+    </div>
+</body>
+</html>
