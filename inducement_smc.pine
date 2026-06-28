@@ -27,9 +27,16 @@ groupEntry = "Entry Settings"
 filterMode    = input.string("None", "Signal Filter Mode", options=["None", "FVG only", "OB only", "FVG + OB"], group=groupEntry)
 fvgThreshold  = input.float(0.0, "Min FVG Size (pips)", minval=0.0, step=0.1, group=groupEntry)
 obLookback    = input.int(5, "Order Block Lookback", minval=1, group=groupEntry)
-riskReward    = input.float(2.0, "Risk:Reward", minval=0.1, step=0.1, group=groupEntry)
-atrPeriod     = input.int(14, "ATR Period for SL", group=groupEntry)
-atrMult       = input.float(1.5, "ATR Multiplier", minval=0.1, step=0.1, group=groupEntry)
+useEmaFilter  = input.bool(true, "Use EMA Trend Filter", group=groupEntry)
+emaPeriod     = input.int(200, "EMA Period", minval=1, group=groupEntry)
+useCloseConf  = input.bool(true, "Wait for Candle Close Confirmation", group=groupEntry)
+
+groupSl = "Stop Loss / Take Profit"
+slMode        = input.string("Inducement level", "SL Mode", options=["ATR based", "Inducement level"], group=groupSl)
+atrPeriod     = input.int(14, "ATR Period", group=groupSl)
+atrMult       = input.float(1.0, "ATR Multiplier", minval=0.1, step=0.1, group=groupSl)
+maxSLPips     = input.float(50.0, "Max SL in pips", minval=0.0, step=1.0, group=groupSl)
+riskReward    = input.float(2.0, "Risk:Reward", minval=0.1, step=0.1, group=groupSl)
 
 groupWinrate = "Winrate Stats"
 showWinrate   = input.bool(true, "Show Winrate Statistics", group=groupWinrate)
@@ -40,6 +47,7 @@ maxSignals    = input.int(200, "Max Signals to Track", minval=10, group=groupWin
 // ═════════════════════════════════════════════════════════════════════════════
 pipFactor = syminfo.mintick * 10
 atr = ta.atr(atrPeriod)
+ema = ta.ema(close, emaPeriod)
 
 useFvg = filterMode == "FVG only" or filterMode == "FVG + OB"
 useOb  = filterMode == "OB only" or filterMode == "FVG + OB"
@@ -143,38 +151,68 @@ bearObValid = useOb ? isBearOb() : true
 // ═════════════════════════════════════════════════════════════════════════════
 // ENTRY SIGNALS
 // ═════════════════════════════════════════════════════════════════════════════
-longEntry  = bullishInduce and bullFvgValid and bullObValid and marketStructure == "bullish"
-shortEntry = bearishInduce and bearFvgValid and bearObValid and marketStructure == "bearish"
+emaLongOk  = useEmaFilter ? close > ema : true
+emaShortOk = useEmaFilter ? close < ema : true
+
+longEntryRaw  = bullishInduce and bullFvgValid and bullObValid and marketStructure == "bullish" and emaLongOk
+shortEntryRaw = bearishInduce and bearFvgValid and bearObValid and marketStructure == "bearish" and emaShortOk
+
+longEntry  = useCloseConf ? longEntryRaw[1] : longEntryRaw
+shortEntry = useCloseConf ? shortEntryRaw[1] : shortEntryRaw
 
 plotshape(longEntry, title="Buy", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, text="BUY", size=size.normal)
 plotshape(shortEntry, title="Sell", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, text="SELL", size=size.normal)
 
 // Debug labels
-if showDebug and bullishInduce and not longEntry
-    reason = not bullFvgValid ? "No FVG" : not bullObValid ? "No OB" : "?"
+if showDebug and bullishInduce and not longEntryRaw
+    reason = not emaLongOk ? "Below EMA" : not bullFvgValid ? "No FVG" : not bullObValid ? "No OB" : "?"
     label.new(bar_index, low, reason, style=label.style_label_up, color=color.gray, textcolor=color.white, yloc=yloc.belowbar, size=size.small)
-if showDebug and bearishInduce and not shortEntry
-    reason = not bearFvgValid ? "No FVG" : not bearObValid ? "No OB" : "?"
+if showDebug and bearishInduce and not shortEntryRaw
+    reason = not emaShortOk ? "Above EMA" : not bearFvgValid ? "No FVG" : not bearObValid ? "No OB" : "?"
     label.new(bar_index, high, reason, style=label.style_label_down, color=color.gray, textcolor=color.white, yloc=yloc.abovebar, size=size.small)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // STOP LOSS & TAKE PROFIT
 // ═════════════════════════════════════════════════════════════════════════════
+calcLongSL() =>
+    float sl = na
+    if slMode == "Inducement level"
+        sl := induceLow[1] - atr * 0.3
+    else
+        sl := close - atr * atrMult
+    if maxSLPips > 0 and not na(sl)
+        maxSlPrice = close - maxSLPips * pipFactor
+        sl := math.max(sl, maxSlPrice)
+    sl
+
+calcShortSL() =>
+    float sl = na
+    if slMode == "Inducement level"
+        sl := induceHigh[1] + atr * 0.3
+    else
+        sl := close + atr * atrMult
+    if maxSLPips > 0 and not na(sl)
+        maxSlPrice = close + maxSLPips * pipFactor
+        sl := math.min(sl, maxSlPrice)
+    sl
+
 if longEntry and showTargets
-    slPrice = close - atr * atrMult
+    slPrice = calcLongSL()
     tpPrice = close + (close - slPrice) * riskReward
-    line.new(bar_index, slPrice, bar_index + 20, slPrice, color=color.red, style=line.style_dashed, width=1)
-    line.new(bar_index, tpPrice, bar_index + 20, tpPrice, color=color.green, style=line.style_dashed, width=1)
-    label.new(bar_index, slPrice, "SL", style=label.style_label_up, color=color.red, textcolor=color.white, yloc=yloc.price)
-    label.new(bar_index, tpPrice, "TP", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
+    if not na(slPrice)
+        line.new(bar_index, slPrice, bar_index + 20, slPrice, color=color.red, style=line.style_dashed, width=1)
+        line.new(bar_index, tpPrice, bar_index + 20, tpPrice, color=color.green, style=line.style_dashed, width=1)
+        label.new(bar_index, slPrice, "SL", style=label.style_label_up, color=color.red, textcolor=color.white, yloc=yloc.price)
+        label.new(bar_index, tpPrice, "TP", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
 
 if shortEntry and showTargets
-    slPrice = close + atr * atrMult
+    slPrice = calcShortSL()
     tpPrice = close - (slPrice - close) * riskReward
-    line.new(bar_index, slPrice, bar_index + 20, slPrice, color=color.red, style=line.style_dashed, width=1)
-    line.new(bar_index, tpPrice, bar_index + 20, tpPrice, color=color.green, style=line.style_dashed, width=1)
-    label.new(bar_index, slPrice, "SL", style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.price)
-    label.new(bar_index, tpPrice, "TP", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
+    if not na(slPrice)
+        line.new(bar_index, slPrice, bar_index + 20, slPrice, color=color.red, style=line.style_dashed, width=1)
+        line.new(bar_index, tpPrice, bar_index + 20, tpPrice, color=color.green, style=line.style_dashed, width=1)
+        label.new(bar_index, slPrice, "SL", style=label.style_label_down, color=color.red, textcolor=color.white, yloc=yloc.price)
+        label.new(bar_index, tpPrice, "TP", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // WINRATE TRACKING
@@ -199,14 +237,16 @@ addSignal(dir, entry, sl, tp) =>
         array.shift(outcomes)
 
 if longEntry
-    sl = close - atr * atrMult
+    sl = calcLongSL()
     tp = close + (close - sl) * riskReward
-    addSignal(1, close, sl, tp)
+    if not na(sl)
+        addSignal(1, close, sl, tp)
 
 if shortEntry
-    sl = close + atr * atrMult
+    sl = calcShortSL()
     tp = close - (sl - close) * riskReward
-    addSignal(-1, close, sl, tp)
+    if not na(sl)
+        addSignal(-1, close, sl, tp)
 
 size = array.size(entryPrices)
 if size > 0

@@ -25,9 +25,21 @@ TradingView Pine Script™ v5 **overlay** indicator for detecting **inducement**
 - Timeframe: 15m or 1h
 - Swing Lookback: 5
 - Inducement Swing Lookback: 3
+- Signal Filter Mode: None
+- Use EMA Trend Filter: true
+- EMA Period: 200
+- Wait for Candle Close Confirmation: true
+- SL Mode: Inducement level
 - ATR Period: 14
-- ATR Multiplier: 1.5
+- ATR Multiplier: 1.0
+- Max SL in pips: 50
 - Risk:Reward: 2.0
+
+## Winrate improvement tips
+- Use **Inducement level SL** instead of ATR-based SL — places stop below/above the inducement sweep.
+- Enable **EMA Trend Filter** — only trade in the direction of the 200 EMA.
+- Enable **Candle Close Confirmation** — avoids false breakout entries.
+- Keep **Max SL in pips** tight enough for your pair (e.g., 50 pips for XAU/USD).
 
 ## Files
 - `inducement_smc.pine` — Pine Script v5 overlay source code.
