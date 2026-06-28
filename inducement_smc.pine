@@ -20,6 +20,9 @@ groupSettings = "Swing / Structure Settings"
 swingLen      = input.int(5, "Swing Lookback", minval=1, group=groupSettings)
 induceSwingLen= input.int(3, "Inducement Swing Lookback", minval=1, group=groupSettings)
 
+groupInduce = "Inducement Settings"
+useInducement = input.bool(true, "Detect Inducement", group=groupInduce)
+
 groupHtf = "Higher-Timeframe Filter"
 useHtfFilter  = input.bool(true, "Use HTF Filter", group=groupHtf)
 htfTimeframe  = input.timeframe("60", "HTF Timeframe", group=groupHtf)
