@@ -2,7 +2,8 @@
 // © inducement_smc_indicator
 
 //@version=5
-indicator("Inducement + SMC Entry [XAU/USD & Pairs]", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+// Overlay indicator — must appear on the main price chart by default
+indicator("Inducement SMC Entry — Overlay", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
 
 // ═════════════════════════════════════════════════════════════════════════════
 // INPUTS
@@ -274,8 +275,8 @@ avgShortLoss = shortLosses > 0 ? shortLossPips / shortLosses : 0.0
 // ═════════════════════════════════════════════════════════════════════════════
 // ALERTS
 // ═════════════════════════════════════════════════════════════════════════════
-alertcondition(longEntry, title="Long Entry", message="Inducement Long on {{ticker}} @ {{close}}")
-alertcondition(shortEntry, title="Short Entry", message="Inducement Short on {{ticker}} @ {{close}}")
+alertcondition(longEntry, title="Long Entry", message='Inducement Long on {{ticker}} @ {{close}}')
+alertcondition(shortEntry, title="Short Entry", message='Inducement Short on {{ticker}} @ {{close}}')
 
 // ═════════════════════════════════════════════════════════════════════════════
 // INFO PANEL

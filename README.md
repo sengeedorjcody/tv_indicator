@@ -1,6 +1,6 @@
-# Inducement + SMC Entry Indicator
+# Inducement SMC Entry — Overlay Indicator
 
-TradingView Pine Script™ v5 indicator for detecting **inducement** on XAU/USD and any other pair.
+TradingView Pine Script™ v5 **overlay** indicator for detecting **inducement** on XAU/USD and any other pair. By default it appears directly on the price chart.
 
 ## What it does
 - Detects swing highs/lows and market structure (BOS / CHoCH).
@@ -15,7 +15,8 @@ TradingView Pine Script™ v5 indicator for detecting **inducement** on XAU/USD 
 1. Open [TradingView Pine Editor](https://www.tradingview.com/pine_script/).
 2. Copy the entire contents of `inducement_smc.pine`.
 3. Click **Save** and **Add to chart**.
-4. Set alerts:
+4. The indicator must appear **on the price chart** (overlay). If it opens in a separate lower pane, right-click the indicator name → **Move to** → **Pane above**.
+5. Set alerts:
    - Right-click the indicator → **Add Alert**.
    - Choose condition `Inducement + SMC Entry [XAU/USD & Pairs]`.
    - Select **Long Entry** or **Short Entry**.
@@ -29,8 +30,9 @@ TradingView Pine Script™ v5 indicator for detecting **inducement** on XAU/USD 
 - Risk:Reward: 2.0
 
 ## Files
-- `inducement_smc.pine` — Pine Script v5 source code.
+- `inducement_smc.pine` — Pine Script v5 overlay source code.
 - `README.md` — this file.
+- `inducement_tailbar.html` — Mongolian explanation with chart examples.
 
 ## Disclaimer
 This indicator is for educational and analytical purposes only. It is not financial advice. Always backtest and use proper risk management.
