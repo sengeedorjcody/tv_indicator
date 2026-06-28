@@ -100,9 +100,9 @@ volOk = useVolumeFilter ? volume > avgVolume : true
 // REGIME DETECTION
 // ═════════════════════════════════════════════════════════════════════════════
 emaSlope = ema - ema[5]
-atrPercentile = ta.percentile(atr, 50, 70)
-isHighVol = atr >= atrPercentile
-isLowVol = atr <= ta.percentile(atr, 50, 30)
+atrRank = ta.percentrank(atr, 50)
+isHighVol = atrRank >= 70
+isLowVol = atrRank <= 30
 isTrending = adxValue >= adxThreshold
 isVolatile = isHighVol and isTrending
 isRanging = not isTrending
