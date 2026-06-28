@@ -21,7 +21,9 @@ TradingView Pine Script™ v5 **overlay** indicator for detecting **inducement**
    - Choose condition `Inducement + SMC Entry [XAU/USD & Pairs]`.
    - Select **Long Entry** or **Short Entry**.
 
-## Recommended XAU/USD settings
+## Recommended settings
+
+### XAU/USD
 - Timeframe: 15m or 1h
 - Swing Lookback: 5
 - Inducement Swing Lookback: 3
@@ -29,17 +31,26 @@ TradingView Pine Script™ v5 **overlay** indicator for detecting **inducement**
 - Use EMA Trend Filter: true
 - EMA Period: 200
 - Wait for Candle Close Confirmation: true
-- SL Mode: Inducement level
-- ATR Period: 14
-- ATR Multiplier: 1.0
-- Max SL in pips: 50
+- Use ADX Filter: true
+- SL Mode: Fixed percent
+- SL Percent: 0.3
+- Risk:Reward: 2.0
+
+### Crypto (BTC, altcoins)
+- Timeframe: 15m or 1h
+- Swing Lookback: 5
+- Inducement Swing Lookback: 3
+- Use EMA Trend Filter: true
+- Use ADX Filter: true
+- SL Mode: Fixed percent
+- SL Percent: 0.3 to 0.5
 - Risk:Reward: 2.0
 
 ## Winrate improvement tips
-- Use **Inducement level SL** instead of ATR-based SL — places stop below/above the inducement sweep.
-- Enable **EMA Trend Filter** — only trade in the direction of the 200 EMA.
+- Use **Fixed percent SL** — symbol-agnostic and keeps R:R consistent.
+- Enable **EMA Trend Filter** — only trade in the direction of the EMA.
+- Enable **ADX Filter** — avoid choppy/ranging markets.
 - Enable **Candle Close Confirmation** — avoids false breakout entries.
-- Keep **Max SL in pips** tight enough for your pair (e.g., 50 pips for XAU/USD).
 
 ## Files
 - `inducement_smc.pine` — Pine Script v5 overlay source code.
