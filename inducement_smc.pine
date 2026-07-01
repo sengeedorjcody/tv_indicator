@@ -15,6 +15,7 @@ showBosChoch   = input.bool(true, "Show BOS / CHoCH", group=groupDisplay)
 showInduceLbl  = input.bool(true, "Show Inducement Labels", group=groupDisplay)
 showTargets    = input.bool(true, "Show TP / SL", group=groupDisplay)
 showDebug      = input.bool(false, "Show Debug Info", group=groupDisplay)
+maxDrawBars   = input.int(300, "Max Drawing Bars Back", minval=50, group=groupDisplay)
 
 groupSettings = "Swing / Structure Settings"
 swingLen      = input.int(5, "Swing Lookback", minval=1, group=groupSettings)
@@ -88,6 +89,7 @@ useFvg = filterMode == "FVG only" or filterMode == "FVG + OB"
 useOb  = filterMode == "OB only" or filterMode == "FVG + OB"
 
 inSession = useSessionFilter ? time(timeframe.period, sessionRange) != 0 : true
+isDrawable = bar_index >= last_bar_index - maxDrawBars
 
 // HTF data
 htfClose = request.security(syminfo.tickerid, htfTimeframe, close[1], lookahead=barmerge.lookahead_on)
@@ -146,15 +148,15 @@ bearishBos  = close < lastSwingLow  and marketStructure != "bearish"
 bullishChoch = close > lastSwingHigh and marketStructure == "bearish"
 bearishChoch = close < lastSwingLow  and marketStructure == "bullish"
 
-if bullishBos or bullishChoch
+if barstate.isconfirmed and (bullishBos or bullishChoch)
     marketStructure := "bullish"
-    if not showOnlyEntries and showBosChoch
+    if not showOnlyEntries and showBosChoch and isDrawable
         line.new(lastSwingHighBar, lastSwingHigh, bar_index, lastSwingHigh, color=color.green, style=line.style_solid, width=2)
         label.new(bar_index, lastSwingHigh, bullishChoch ? "CHoCH" : "BOS", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
 
-if bearishBos or bearishChoch
+if barstate.isconfirmed and (bearishBos or bearishChoch)
     marketStructure := "bearish"
-    if not showOnlyEntries and showBosChoch
+    if not showOnlyEntries and showBosChoch and isDrawable
         line.new(lastSwingLowBar, lastSwingLow, bar_index, lastSwingLow, color=color.red, style=line.style_solid, width=2)
         label.new(bar_index, lastSwingLow, bearishChoch ? "CHoCH" : "BOS", style=label.style_label_up, color=color.red, textcolor=color.white, yloc=yloc.price)
 
@@ -172,12 +174,12 @@ if not na(induceSwingHigh)
 if not na(induceSwingLow)
     induceLow := induceSwingLow
 
-bullishInduce = useInducement and marketStructure == "bullish" and not na(induceLow[1]) and low < induceLow[1] and close > induceLow[1]
-bearishInduce = useInducement and marketStructure == "bearish" and not na(induceHigh[1]) and high > induceHigh[1] and close < induceHigh[1]
+bullishInduce = barstate.isconfirmed and useInducement and marketStructure == "bullish" and not na(induceLow[1]) and low < induceLow[1] and close > induceLow[1]
+bearishInduce = barstate.isconfirmed and useInducement and marketStructure == "bearish" and not na(induceHigh[1]) and high > induceHigh[1] and close < induceHigh[1]
 
-if not showOnlyEntries and showInduceLbl and bullishInduce
+if not showOnlyEntries and showInduceLbl and bullishInduce and isDrawable
     label.new(bar_index, low, "Ind▲", style=label.style_label_up, color=color.teal, textcolor=color.white, yloc=yloc.belowbar)
-if not showOnlyEntries and showInduceLbl and bearishInduce
+if not showOnlyEntries and showInduceLbl and bearishInduce and isDrawable
     label.new(bar_index, high, "Ind▼", style=label.style_label_down, color=color.orange, textcolor=color.white, yloc=yloc.abovebar)
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -247,10 +249,10 @@ plotshape(longEntry, title="Buy", style=shape.labelup, location=location.belowba
 plotshape(shortEntry, title="Sell", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, text="SELL", size=size.normal)
 
 // Debug labels
-if showDebug and bullishInduce and not longEntryRaw
+if showDebug and bullishInduce and not longEntryRaw and isDrawable
     reason = not htfBullish ? "HTF" : not adxOk ? "ADX" : not emaLongOk ? "EMA" : not volOk ? "VOL" : not inSession ? "Session" : longScore < minScore ? "Score" + str.tostring(longScore) : "?"
     label.new(bar_index, low, reason, style=label.style_label_up, color=color.gray, textcolor=color.white, yloc=yloc.belowbar, size=size.small)
-if showDebug and bearishInduce and not shortEntryRaw
+if showDebug and bearishInduce and not shortEntryRaw and isDrawable
     reason = not htfBearish ? "HTF" : not adxOk ? "ADX" : not emaShortOk ? "EMA" : not volOk ? "VOL" : not inSession ? "Session" : shortScore < minScore ? "Score" + str.tostring(shortScore) : "?"
     label.new(bar_index, high, reason, style=label.style_label_down, color=color.gray, textcolor=color.white, yloc=yloc.abovebar, size=size.small)
 
@@ -289,7 +291,7 @@ calcShortSL() =>
         sl := math.min(sl, maxSlPrice)
     sl
 
-if longEntry and showTargets
+if longEntry and showTargets and isDrawable
     slPrice = calcLongSL()
     rr = rrForTrade(true)
     tpPrice = close + (close - slPrice) * rr
@@ -299,7 +301,7 @@ if longEntry and showTargets
         label.new(bar_index, slPrice, "SL", style=label.style_label_up, color=color.red, textcolor=color.white, yloc=yloc.price)
         label.new(bar_index, tpPrice, "TP", style=label.style_label_down, color=color.green, textcolor=color.white, yloc=yloc.price)
 
-if shortEntry and showTargets
+if shortEntry and showTargets and isDrawable
     slPrice = calcShortSL()
     rr = rrForTrade(false)
     tpPrice = close - (slPrice - close) * rr
@@ -359,9 +361,9 @@ if shortEntry
     if not na(sl)
         addSignal(-1, close, sl, tp, be, bar_index)
 
-size = array.size(entryPrices)
-if size > 0
-    for i = 0 to size - 1
+arraySize = array.size(entryPrices)
+if arraySize > 0
+    for i = 0 to arraySize - 1
         if array.get(outcomes, i) == 0
             dir = array.get(directions, i)
             sl  = array.get(slPrices, i)
@@ -417,8 +419,8 @@ longLossPips= 0.0
 shortWinPips= 0.0
 shortLossPips=0.0
 
-if size > 0
-    for i = 0 to size - 1
+if arraySize > 0
+    for i = 0 to arraySize - 1
         dir = array.get(directions, i)
         out = array.get(outcomes, i)
         entry = array.get(entryPrices, i)
@@ -497,4 +499,4 @@ if barstate.islast
         table.cell(infoPanel, 0, 12, "Total WR", text_color=color.white, text_size=size.small)
         table.cell(infoPanel, 1, 12, str.tostring(totalWinrate, "#.##") + "%", text_color=totalWinrate >= 50 ? color.green : color.red, text_size=size.small)
         table.cell(infoPanel, 0, 13, "Open Trades", text_color=color.white, text_size=size.small)
-        table.cell(infoPanel, 1, 13, str.tostring(size - totalWins - totalLosses), text_color=color.gray, text_size=size.small)
+        table.cell(infoPanel, 1, 13, str.tostring(arraySize - totalWins - totalLosses), text_color=color.gray, text_size=size.small)
