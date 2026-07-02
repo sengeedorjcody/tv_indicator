@@ -1,0 +1,323 @@
+//@version=6
+indicator("Inducement Entry Pro v7 — IDM+POI Entry", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+//  Inducement Entry Pro v7
+//  ─ Шинэ логик: IDM sweep + POI (OB/FVG) retest entry
+//
+//  Алхам:
+//   1. Market structure (BOS/CHoCH) — trend тодорхойлох
+//   2. Inducement (IDM) — trend дагуух minor liquidity цэг
+//   3. IDM Sweep — үнэ IDM-г цэвэрлээд эргэх (wick + close reversal)
+//   4. POI зона — sweep-ийн ард үүссэн OB эсвэл FVG
+//   5. ENTRY — үнэ POI зона руу retest хийхэд оролт
+//
+//  Ялгаа v6-аас: v6 нь sweep дээр шууд ордог. v7 нь sweep-ийн дараа
+//  POI retest хүлээж илүү сайн үнээр, бага SL-тэй ордог.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_CORE  = "① IDM Core"
+string G_POI   = "② POI Entry"
+string G_RISK  = "③ Risk"
+string G_FLT   = "④ Filters"
+string G_VIS   = "⑤ Visual"
+
+// ─── Inputs ───
+int   swing_len   = input.int(5,    "Major Swing Length",     minval=2,  group=G_CORE)
+int   idm_len     = input.int(3,    "IDM Swing Length",       minval=1,  group=G_CORE)
+int   idm_expire  = input.int(60,   "IDM Expire (bars)",      minval=10, group=G_CORE)
+
+bool  use_ob      = input.bool(true,  "OB POI ашиглах",       group=G_POI)
+bool  use_fvg     = input.bool(true,  "FVG POI ашиглах",      group=G_POI)
+int   poi_wait    = input.int(25,     "POI Retest хүлээх (bars)", minval=3, maxval=100, group=G_POI)
+
+bool  use_atr_sl  = input.bool(true,  "ATR-Adaptive SL",      group=G_RISK)
+float atr_mult    = input.float(1.0,  "ATR SL Mult",  minval=0.1, step=0.1, group=G_RISK)
+int   atr_len     = input.int(14,     "ATR Length",   minval=1,  group=G_RISK)
+float rr1         = input.float(1.5,  "TP1 R:R",      minval=0.5, step=0.1, group=G_RISK)
+float rr2         = input.float(3.0,  "TP2 R:R",      minval=1.0, step=0.5, group=G_RISK)
+
+bool   use_htf    = input.bool(true,       "HTF EMA Filter",  group=G_FLT)
+string htf_tf     = input.timeframe("60",  "HTF Timeframe",   group=G_FLT)
+int    htf_ema_l  = input.int(50,          "HTF EMA Length",  minval=1, group=G_FLT)
+bool   use_sess   = input.bool(false,      "Session Filter",  group=G_FLT)
+string sess       = input.session("0800-1700", "Session",     group=G_FLT)
+
+color col_bull  = input.color(color.rgb(38, 200, 120),  "Bull",  group=G_VIS)
+color col_bear  = input.color(color.rgb(240, 80, 60),   "Bear",  group=G_VIS)
+color col_poi   = input.color(color.new(color.rgb(255, 190, 0), 75), "POI Zone", group=G_VIS)
+bool  show_idm  = input.bool(true, "IDM тэмдэглэгээ",   group=G_VIS)
+bool  show_poi  = input.bool(true, "POI зона харуулах", group=G_VIS)
+bool  show_dash = input.bool(true, "Dashboard",         group=G_VIS)
+
+// ─── Filters ───
+float atr_v   = ta.atr(atr_len)
+float htf_ema = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_ema_l), lookahead=barmerge.lookahead_off)
+bool  f_htf_l = not use_htf or close > htf_ema
+bool  f_htf_s = not use_htf or close < htf_ema
+bool  f_sess  = not use_sess or not na(time(timeframe.period, sess))
+
+// ─── Market Structure: major swings ───
+float mph = ta.pivothigh(high, swing_len, swing_len)
+float mpl = ta.pivotlow(low,   swing_len, swing_len)
+
+var float major_high = na
+var float major_low  = na
+var int   trend      = 0     // 1 = bull, -1 = bear
+
+if not na(mph)
+    major_high := mph
+if not na(mpl)
+    major_low := mpl
+
+// BOS / CHoCH
+bool bos_up   = not na(major_high) and close > major_high
+bool bos_down = not na(major_low)  and close < major_low
+if bos_up
+    trend := 1
+    major_high := na
+if bos_down
+    trend := -1
+    major_low := na
+
+// ─── IDM Detection: minor swing opposite to trend ───
+// Bull trend: minor swing LOW = inducement (sell-side liquidity доор нь)
+// Bear trend: minor swing HIGH = inducement (buy-side liquidity дээр нь)
+float iph = ta.pivothigh(high, idm_len, idm_len)
+float ipl = ta.pivotlow(low,   idm_len, idm_len)
+
+var float idm_bull_price = na   // bull IDM = minor low
+var int   idm_bull_bar   = na
+var float idm_bull_sl    = na
+var float idm_bear_price = na   // bear IDM = minor high
+var int   idm_bear_bar   = na
+var float idm_bear_sl    = na
+
+if trend == 1 and not na(ipl)
+    idm_bull_price := ipl
+    idm_bull_bar   := bar_index - idm_len
+    idm_bull_sl    := low[idm_len]
+if trend == -1 and not na(iph)
+    idm_bear_price := iph
+    idm_bear_bar   := bar_index - idm_len
+    idm_bear_sl    := high[idm_len]
+
+// Expire old IDM
+if not na(idm_bull_bar) and bar_index - idm_bull_bar > idm_expire
+    idm_bull_price := na
+    idm_bull_bar   := na
+if not na(idm_bear_bar) and bar_index - idm_bear_bar > idm_expire
+    idm_bear_price := na
+    idm_bear_bar   := na
+
+// ─── IDM Sweep detection ───
+// Bull: low sweeps IDM low, close recovers above → bullish setup activated
+// Bear: high sweeps IDM high, close rejects below → bearish setup activated
+bool sweep_bull = trend == 1  and not na(idm_bull_price) and low  <= idm_bull_price and close > idm_bull_price
+bool sweep_bear = trend == -1 and not na(idm_bear_price) and high >= idm_bear_price and close < idm_bear_price
+
+// ─── POI Detection at sweep moment ───
+// Bullish POI: last bearish candle (OB) or bullish FVG below current price
+// Bearish POI: last bullish candle (OB) or bearish FVG above current price
+f_find_bull_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] < open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+f_find_bear_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] > open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+// FVG (3-candle gap)
+bool  has_bull_fvg = low > high[2]
+float bfvg_t = has_bull_fvg ? low     : na
+float bfvg_b = has_bull_fvg ? high[2] : na
+bool  has_bear_fvg = high < low[2]
+float sfvg_t = has_bear_fvg ? low[2]  : na
+float sfvg_b = has_bear_fvg ? high    : na
+
+// ─── Setup state machine ───
+// 0 = idle | 1 = waiting POI retest (bull) | -1 = waiting POI retest (bear)
+var int   setup      = 0
+var float poi_top    = na
+var float poi_bot    = na
+var float setup_sl   = na
+var int   setup_bar  = na
+var box   poi_box    = na
+
+// Activate bull setup on sweep
+if sweep_bull and f_htf_l and f_sess and setup == 0
+    [ob_t, ob_b] = f_find_bull_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(bfvg_t) and (na(pt) or bfvg_t < pt)
+        pt := bfvg_t
+        pb := bfvg_b
+    if not na(pt) and pt < close
+        setup     := 1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.min(idm_bull_sl, pb)
+        setup_bar := bar_index
+        idm_bull_price := na
+        if show_idm
+            label.new(bar_index, low, "IDM ⤵ swept", color=color.new(col_bull, 20), textcolor=color.white, style=label.style_label_up, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bull, 40), bgcolor=col_poi)
+
+// Activate bear setup on sweep
+if sweep_bear and f_htf_s and f_sess and setup == 0
+    [ob_t, ob_b] = f_find_bear_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(sfvg_t) and (na(pb) or sfvg_b > pb)
+        pt := sfvg_t
+        pb := sfvg_b
+    if not na(pb) and pb > close
+        setup     := -1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.max(idm_bear_sl, pt)
+        setup_bar := bar_index
+        idm_bear_price := na
+        if show_idm
+            label.new(bar_index, high, "IDM ⤴ swept", color=color.new(col_bear, 20), textcolor=color.white, style=label.style_label_down, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bear, 40), bgcolor=col_poi)
+
+// ─── Entry: POI retest ───
+bool long_entry  = false
+bool short_entry = false
+float entry_p    = na
+float sl_p       = na
+
+if setup == 1
+    // expire
+    if bar_index - setup_bar > poi_wait or close < setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if low <= poi_top and close > poi_bot
+        long_entry := true
+        entry_p    := math.min(close, poi_top)
+        sl_p       := use_atr_sl ? setup_sl - atr_v * atr_mult : setup_sl
+        setup      := 0
+
+if setup == -1
+    if bar_index - setup_bar > poi_wait or close > setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if high >= poi_bot and close < poi_top
+        short_entry := true
+        entry_p     := math.max(close, poi_bot)
+        sl_p        := use_atr_sl ? setup_sl + atr_v * atr_mult : setup_sl
+        setup       := 0
+
+// ─── TP levels & drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+f_draw(float ep, float sp, float t1, float t2, color c) =>
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    e  = line.new(bar_index, ep, r, ep, color=c,           width=2)
+    s  = line.new(bar_index, sp, r, sp, color=color.red,   width=1, style=line.style_dashed)
+    a  = line.new(bar_index, t1, r, t1, color=color.green, width=1, style=line.style_dashed)
+    b  = line.new(bar_index, t2, r, t2, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    el = label.new(r, ep, "Entry "  + str.tostring(ep, format.mintick), color=color.new(c, 75),          textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl = label.new(r, sp, "SL "     + str.tostring(sp, format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    l1 = label.new(r, t1, "TP1 "    + str.tostring(t1, format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    l2 = label.new(r, t2, "TP2 "    + str.tostring(t2, format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+    [e, s, a, b, el, sl, l1, l2]
+
+float risk_l = long_entry  ? entry_p - sl_p : na
+float tp1_l  = long_entry  ? entry_p + risk_l * rr1 : na
+float tp2_l  = long_entry  ? entry_p + risk_l * rr2 : na
+float risk_s = short_entry ? sl_p - entry_p : na
+float tp1_s  = short_entry ? entry_p - risk_s * rr1 : na
+float tp2_s  = short_entry ? entry_p - risk_s * rr2 : na
+
+if long_entry and risk_l > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_p, tp1_l, tp2_l, col_bull)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+if short_entry and risk_s > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_p, tp1_s, tp2_s, col_bear)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+// ─── Signal labels ───
+plotshape(long_entry,  "LONG",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\nIDM", size=size.normal)
+plotshape(short_entry, "SHORT", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\nIDM", size=size.normal)
+
+// Pending IDM levels
+plot(idm_bull_price, "Bull IDM", color=color.new(color.rgb(38,200,120), 55), style=plot.style_linebr, linewidth=1)
+plot(idm_bear_price, "Bear IDM", color=color.new(color.rgb(240,80,60),  55), style=plot.style_linebr, linewidth=1)
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 5, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string tr_txt = trend == 1 ? "▲ Bullish" : trend == -1 ? "▼ Bearish" : "○ Neutral"
+    color  tr_col = trend == 1 ? col_bull : trend == -1 ? col_bear : color.gray
+    string st_txt = setup == 1 ? "⏳ POI хүлээж (LONG)" : setup == -1 ? "⏳ POI хүлээж (SHORT)" : "○ Idle"
+    string idm_b  = not na(idm_bull_price) ? str.tostring(idm_bull_price, format.mintick) : "—"
+    string idm_s  = not na(idm_bear_price) ? str.tostring(idm_bear_price, format.mintick) : "—"
+    table.cell(dash, 0, 0, " IDM Entry v7", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Trend",    bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, tr_txt,      bgcolor=color.rgb(14,17,28), text_color=tr_col, text_size=size.small)
+    table.cell(dash, 0, 2, " Setup",    bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, st_txt,      bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Bull IDM", bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, idm_b,       bgcolor=color.rgb(14,17,28), text_color=col_bull, text_size=size.small)
+    table.cell(dash, 0, 4, " Bear IDM", bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, idm_s,       bgcolor=color.rgb(10,10,18), text_color=col_bear, text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(long_entry,  "IDM v7 LONG",  "Inducement v7 LONG — {{ticker}} @ {{close}}")
+alertcondition(short_entry, "IDM v7 SHORT", "Inducement v7 SHORT — {{ticker}} @ {{close}}")
