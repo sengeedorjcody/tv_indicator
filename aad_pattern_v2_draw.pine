@@ -1,0 +1,342 @@
+//@version=6
+indicator("AAD Pattern v2 — Draw + BUY/SELL", overlay=true, max_lines_count=400, max_labels_count=400, max_boxes_count=100)
+
+// ═══════════════════════════════════════════════════════════════════
+//  AAD PATTERN v2 — БҮРЭН ЗУРДАГ + ХОЁР ЧИГЛЭЛ
+//
+//  Зурган дээрх бүх элементийг chart дээр зурна:
+//   · Сувгийн 2 шугам (support + resistance)
+//   · HH / HL цэгүүдийн label
+//   · "BREAKOUT LH" тасархай шугам
+//   · LL label (breakdown доод цэг)
+//   · LH label (жижиг pullback)
+//   · STOP бүс (цэнхэр) + PROFIT бүс (ногоон) — зурган шиг
+//   · SELL / BUY сигнал
+//
+//  SELL (зурган дээрх): Downtrend → өсөх суваг → ① support эвдрэх
+//   → ② last HL эвдрэх (LL үүснэ) → ③ жижиг LH pullback эвдрэх → SELL
+//
+//  BUY (толин тусгал): Uptrend → буурах суваг → ① resistance эвдрэх
+//   → ② last LH эвдрэх (HH үүснэ) → ③ жижиг HL pullback эвдрэх → BUY
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_CH  = "① Суваг"
+string G_ENT = "②③ Breakdown / Entry"
+string G_RSK = "④ Risk"
+string G_VIS = "⑤ Visual"
+
+// ─── Inputs ───
+int   piv_len   = input.int(4,     "Pivot Length", minval=2, maxval=10, group=G_CH)
+float ch_min    = input.float(0.1, "Суваг min налуу (ATR×)", minval=0.0, step=0.05, group=G_CH)
+bool  use_trend = input.bool(true, "Trend контекст шаардах (EMA200)", group=G_CH)
+int   trend_ema = input.int(200,   "Trend EMA", minval=50, group=G_CH)
+bool  do_sell   = input.bool(true, "SELL pattern таних", group=G_CH)
+bool  do_buy    = input.bool(true, "BUY pattern таних (толин)", group=G_CH)
+
+float bd_buf   = input.float(0.1, "Breakout buffer (ATR×)", minval=0.0, step=0.05, group=G_ENT)
+int   max_wait = input.int(60,    "Үе шат max хугацаа (bars)", minval=20, maxval=200, group=G_ENT)
+int   mini_piv = input.int(2,     "Жижиг pullback pivot", minval=1, maxval=5, group=G_ENT)
+float min_pull = input.float(0.5, "Pullback min өндөр (ATR×)", minval=0.1, step=0.1, group=G_ENT)
+
+int   atr_len = input.int(14,    "ATR Length", minval=1, group=G_RSK)
+float sl_buf  = input.float(0.3, "SL buffer (ATR×)", minval=0.0, step=0.1, group=G_RSK)
+float rr1     = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=G_RSK)
+float rr2     = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RSK)
+
+color col_bull = input.color(color.rgb(38, 200, 120),  "Bull өнгө", group=G_VIS)
+color col_bear = input.color(color.rgb(240, 80, 60),   "Bear өнгө", group=G_VIS)
+color col_stop = input.color(color.new(color.rgb(120, 140, 220), 65), "STOP бүс", group=G_VIS)
+color col_prof = input.color(color.new(color.rgb(60, 200, 180), 70),  "PROFIT бүс", group=G_VIS)
+bool  show_dash = input.bool(true, "Dashboard", group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+float atr_v = ta.atr(atr_len)
+float ema_v = ta.ema(close, trend_ema)
+bool  dt_ok = not use_trend or close < ema_v or ema_v < ema_v[10]   // SELL-д: downtrend
+bool  ut_ok = not use_trend or close > ema_v or ema_v > ema_v[10]   // BUY-д: uptrend
+
+float ph = ta.pivothigh(high, piv_len, piv_len)
+float pl = ta.pivotlow(low,   piv_len, piv_len)
+
+// Сүүлийн 2 pivot high/low
+var float ph1 = na
+var float ph2 = na
+var int   ph1_bar = na
+var int   ph2_bar = na
+var float pl1 = na
+var float pl2 = na
+var int   pl1_bar = na
+var int   pl2_bar = na
+
+if not na(ph)
+    ph2     := ph1
+    ph2_bar := ph1_bar
+    ph1     := ph
+    ph1_bar := bar_index - piv_len
+if not na(pl)
+    pl2     := pl1
+    pl2_bar := pl1_bar
+    pl1     := pl
+    pl1_bar := bar_index - piv_len
+
+// ─── Өсөх суваг (SELL setup): HL↑ + HH↑, downtrend дотор ───
+bool asc_ch = not na(pl1) and not na(pl2) and not na(ph1) and not na(ph2) and
+     pl1 > pl2 + ch_min * atr_v and ph1 > ph2 + ch_min * atr_v and dt_ok
+
+float asc_slope = asc_ch and pl1_bar != pl2_bar ? (pl1 - pl2) / (pl1_bar - pl2_bar) : na
+float asc_sup   = asc_ch and not na(asc_slope) ? pl1 + asc_slope * (bar_index - pl1_bar) : na
+
+// ─── Буурах суваг (BUY setup): LH↓ + LL↓, uptrend дотор ───
+bool desc_ch = not na(ph1) and not na(ph2) and not na(pl1) and not na(pl2) and
+     ph1 < ph2 - ch_min * atr_v and pl1 < pl2 - ch_min * atr_v and ut_ok
+
+float desc_slope = desc_ch and ph1_bar != ph2_bar ? (ph1 - ph2) / (ph1_bar - ph2_bar) : na
+float desc_res   = desc_ch and not na(desc_slope) ? ph1 + desc_slope * (bar_index - ph1_bar) : na
+
+// ═══════════════════════════════════════════════════════════════════
+// STATE MACHINE (нэг зэрэг нэг pattern)
+//  dir: 1=SELL setup, -1=BUY setup | phase: 1=① эвдэрсэн, 2=② эвдэрсэн
+// ═══════════════════════════════════════════════════════════════════
+
+var int   pdir       = 0
+var int   phase      = 0
+var float key_lvl    = na    // ②-д эвдэх түвшин (last HL / last LH)
+var float ext_px     = na    // breakdown extreme (LL / HH)
+var float mini_px    = na    // жижиг pullback цэг (LH / HL) — SL тал
+var float mini_trig  = na    // entry trigger (жижиг pattern-ийн эвдрэх түвшин)
+var int   phase_bar  = na
+var int   used_bar   = na
+var line  ln_a       = na    // суваг шугам 1
+var line  ln_b       = na    // суваг шугам 2
+var line  ln_key     = na    // BREAKOUT түвшин
+
+// ─── ① SELL: өсөх сувгийн support эвдрэх ───
+bool sell_arm = do_sell and asc_ch and not na(asc_sup) and close < asc_sup - bd_buf * atr_v and
+     pdir == 0 and (na(used_bar) or pl1_bar != used_bar)
+
+if sell_arm
+    pdir      := 1
+    phase     := 1
+    key_lvl   := pl1
+    ext_px    := low
+    phase_bar := bar_index
+    // Суваг зурах: support (pl2→pl1 extended) + resistance (ph2→ph1 extended)
+    line.delete(ln_a)
+    line.delete(ln_b)
+    line.delete(ln_key)
+    ln_a := line.new(pl2_bar, pl2, bar_index, asc_sup, color=color.new(col_bear, 20), width=2)
+    float res_now = ph1 + (ph1 - ph2) / (ph1_bar - ph2_bar) * (bar_index - ph1_bar)
+    ln_b := line.new(ph2_bar, ph2, bar_index, res_now, color=color.new(col_bear, 20), width=2)
+    // HH/HL labels
+    label.new(ph2_bar, ph2, "HH", color=color.new(col_bear, 60), textcolor=color.white, style=label.style_label_down, size=size.small)
+    label.new(ph1_bar, ph1, "HH", color=color.new(col_bear, 60), textcolor=color.white, style=label.style_label_down, size=size.small)
+    label.new(pl2_bar, pl2, "HL", color=color.new(col_bear, 70), textcolor=color.white, style=label.style_label_up, size=size.small)
+    label.new(pl1_bar, pl1, "HL", color=color.new(col_bear, 70), textcolor=color.white, style=label.style_label_up, size=size.small)
+    // BREAKOUT LH тасархай шугам
+    ln_key := line.new(pl1_bar, pl1, bar_index + max_wait, pl1, color=color.new(color.orange, 30), width=1, style=line.style_dashed)
+    label.new(bar_index, pl1, "BREAKOUT LH", color=color.new(color.orange, 70), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+    label.new(bar_index, low, "①", color=color.new(col_bear, 30), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ─── ① BUY: буурах сувгийн resistance эвдрэх ───
+bool buy_arm = do_buy and desc_ch and not na(desc_res) and close > desc_res + bd_buf * atr_v and
+     pdir == 0 and (na(used_bar) or ph1_bar != used_bar)
+
+if buy_arm
+    pdir      := -1
+    phase     := 1
+    key_lvl   := ph1
+    ext_px    := high
+    phase_bar := bar_index
+    line.delete(ln_a)
+    line.delete(ln_b)
+    line.delete(ln_key)
+    ln_a := line.new(ph2_bar, ph2, bar_index, desc_res, color=color.new(col_bull, 20), width=2)
+    float sup_now = pl1 + (pl1 - pl2) / (pl1_bar - pl2_bar) * (bar_index - pl1_bar)
+    ln_b := line.new(pl2_bar, pl2, bar_index, sup_now, color=color.new(col_bull, 20), width=2)
+    label.new(ph2_bar, ph2, "LH", color=color.new(col_bull, 60), textcolor=color.white, style=label.style_label_down, size=size.small)
+    label.new(ph1_bar, ph1, "LH", color=color.new(col_bull, 60), textcolor=color.white, style=label.style_label_down, size=size.small)
+    label.new(pl2_bar, pl2, "LL", color=color.new(col_bull, 70), textcolor=color.white, style=label.style_label_up, size=size.small)
+    label.new(pl1_bar, pl1, "LL", color=color.new(col_bull, 70), textcolor=color.white, style=label.style_label_up, size=size.small)
+    ln_key := line.new(ph1_bar, ph1, bar_index + max_wait, ph1, color=color.new(color.orange, 30), width=1, style=line.style_dashed)
+    label.new(bar_index, ph1, "BREAKOUT LH", color=color.new(color.orange, 70), textcolor=color.white, style=label.style_label_left, size=size.tiny)
+    label.new(bar_index, high, "①", color=color.new(col_bull, 30), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── ② Key түвшин эвдрэх ───
+if phase == 1
+    if pdir == 1
+        ext_px := math.min(ext_px, low)
+        if bar_index - phase_bar > max_wait or close > ph1
+            pdir  := 0
+            phase := 0
+        else if close < key_lvl - bd_buf * atr_v
+            phase     := 2
+            ext_px    := low
+            mini_px   := na
+            phase_bar := bar_index
+            label.new(bar_index, low, "② LL", color=color.new(col_bear, 30), textcolor=color.white, style=label.style_label_up, size=size.small)
+    if pdir == -1
+        ext_px := math.max(ext_px, high)
+        if bar_index - phase_bar > max_wait or close < pl1
+            pdir  := 0
+            phase := 0
+        else if close > key_lvl + bd_buf * atr_v
+            phase     := 2
+            ext_px    := high
+            mini_px   := na
+            phase_bar := bar_index
+            label.new(bar_index, high, "② HH", color=color.new(col_bull, 30), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── ③ Жижиг pullback + ENTRY ───
+float mini_ph = ta.pivothigh(high, mini_piv, mini_piv)
+float mini_pl = ta.pivotlow(low,   mini_piv, mini_piv)
+
+bool  sell_sig = false
+bool  buy_sig  = false
+float entry_p  = na
+float sl_p     = na
+
+if phase == 2
+    if pdir == 1
+        ext_px := math.min(ext_px, low)
+        if bar_index - phase_bar > max_wait or close > key_lvl
+            pdir  := 0
+            phase := 0
+        else
+            if not na(mini_ph) and mini_ph > ext_px + min_pull * atr_v and mini_ph < key_lvl
+                mini_px   := mini_ph
+                mini_trig := ext_px
+                label.new(bar_index - mini_piv, mini_ph, "LH", color=color.new(col_bear, 45), textcolor=color.white, style=label.style_label_down, size=size.small)
+            if not na(mini_px) and close < mini_trig - bd_buf * atr_v and barstate.isconfirmed
+                sell_sig := true
+                entry_p  := close
+                sl_p     := mini_px + sl_buf * atr_v
+                pdir     := 0
+                phase    := 0
+                used_bar := pl1_bar
+    if pdir == -1
+        ext_px := math.max(ext_px, high)
+        if bar_index - phase_bar > max_wait or close < key_lvl
+            pdir  := 0
+            phase := 0
+        else
+            if not na(mini_pl) and mini_pl < ext_px - min_pull * atr_v and mini_pl > key_lvl
+                mini_px   := mini_pl
+                mini_trig := ext_px
+                label.new(bar_index - mini_piv, mini_pl, "HL", color=color.new(col_bull, 45), textcolor=color.white, style=label.style_label_up, size=size.small)
+            if not na(mini_px) and close > mini_trig + bd_buf * atr_v and barstate.isconfirmed
+                buy_sig  := true
+                entry_p  := close
+                sl_p     := mini_px - sl_buf * atr_v
+                pdir     := 0
+                phase    := 0
+                used_bar := ph1_bar
+
+// ─── TP + зурган шиг STOP/PROFIT бүс ───
+float risk_v = sell_sig ? sl_p - entry_p : buy_sig ? entry_p - sl_p : na
+float tp1_v  = sell_sig ? entry_p - risk_v * rr1 : buy_sig ? entry_p + risk_v * rr1 : na
+float tp2_v  = sell_sig ? entry_p - risk_v * rr2 : buy_sig ? entry_p + risk_v * rr2 : na
+
+var box  stop_bx = na
+var box  prof_bx = na
+var label e_lb   = na
+var label s_lb   = na
+var label t_lb   = na
+
+if (sell_sig or buy_sig) and risk_v > 0
+    box.delete(stop_bx)
+    box.delete(prof_bx)
+    label.delete(e_lb)
+    label.delete(s_lb)
+    label.delete(t_lb)
+    int r = bar_index + 35
+    // STOP бүс (entry ↔ SL, цэнхэр) — зурган шиг
+    stop_bx := box.new(bar_index, math.max(entry_p, sl_p), r, math.min(entry_p, sl_p), border_color=color.new(color.blue, 60), bgcolor=col_stop)
+    // PROFIT бүс (entry ↔ TP2, ногоон)
+    prof_bx := box.new(bar_index, math.max(entry_p, tp2_v), r, math.min(entry_p, tp2_v), border_color=color.new(color.teal, 60), bgcolor=col_prof)
+    e_lb := label.new(r, entry_p, "ENTRY " + str.tostring(entry_p, format.mintick), color=color.new(color.gray, 60),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    s_lb := label.new(r, sl_p,    "STOP "  + str.tostring(sl_p,    format.mintick), color=color.new(color.blue, 60), textcolor=color.white, style=label.style_label_left, size=size.small)
+    t_lb := label.new(r, tp2_v,   "TP2 "   + str.tostring(tp2_v,   format.mintick), color=color.new(color.teal, 60), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// ─── Signal labels ───
+plotshape(sell_sig, "AAD SELL", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\nAAD③", size=size.normal)
+plotshape(buy_sig,  "AAD BUY",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\nAAD③", size=size.normal)
+
+// ─── Winrate Tracking (TP1 = WIN + breakeven) ───
+var int   trade_dir  = 0
+var float trade_sl   = na
+var float trade_tp1  = na
+var float trade_tp2  = na
+var int   wins       = 0
+var int   losses     = 0
+var int   tp2_hits   = 0
+var bool  tp1_done   = false
+
+if sell_sig and risk_v > 0
+    trade_dir := -1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+if buy_sig and risk_v > 0
+    trade_dir := 1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+
+if trade_dir == -1 and not (sell_sig or buy_sig)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == 1 and not (sell_sig or buy_sig)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 6, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string dir_s = pdir == 1 ? "SELL" : pdir == -1 ? "BUY" : ""
+    string st_txt = phase == 1 ? "① Суваг эвдэрсэн (" + dir_s + ") — ② хүлээж" : phase == 2 ? (na(mini_px) ? "② эвдэрсэн (" + dir_s + ") — pullback хүлээж" : "③ Pullback бэлэн (" + dir_s + ") — entry хүлээж") : trade_dir != 0 ? (trade_dir == 1 ? "📈 LONG нээлттэй" : "📉 SHORT нээлттэй") : "○ Суваг хайж байна"
+    color  st_col = pdir == 1 ? col_bear : pdir == -1 ? col_bull : color.rgb(160,175,220)
+    string ky_txt = phase != 0 ? str.tostring(key_lvl, format.mintick) : "—"
+    string wr_txt = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col = na(winrate) ? color.gray : winrate >= 60 ? col_bull : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    string tt_txt = str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits)
+    table.cell(dash, 0, 0, " AAD v2 📐", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Үе шат",   bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, st_txt,      bgcolor=color.rgb(14,17,28), text_color=st_col, text_size=size.small)
+    table.cell(dash, 0, 2, " Key түвшин ②", bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, ky_txt,      bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Winrate",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, wr_txt,      bgcolor=color.rgb(14,17,28), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 4, " Арилжаа",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, tt_txt,      bgcolor=color.rgb(10,10,18), text_color=color.rgb(100,200,255), text_size=size.small)
+    table.cell(dash, 0, 5, " Trend",    bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, close > ema_v ? "EMA200 дээр" : "EMA200 доор", bgcolor=color.rgb(14,17,28), text_color=close > ema_v ? col_bull : col_bear, text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(sell_sig, "AAD SELL", "AAD pattern SELL — {{ticker}} @ {{close}}")
+alertcondition(buy_sig,  "AAD BUY",  "AAD pattern BUY — {{ticker}} @ {{close}}")
+alertcondition(phase == 1 and phase[1] == 0, "AAD ① эвдэрлээ", "AAD: суваг эвдэрлээ — {{ticker}}")
+alertcondition(phase == 2 and phase[1] == 1, "AAD ② эвдэрлээ", "AAD: key түвшин эвдэрлээ — {{ticker}}, pullback хүлээж байна")
