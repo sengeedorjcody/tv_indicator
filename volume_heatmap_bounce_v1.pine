@@ -1,0 +1,313 @@
+//@version=6
+indicator("Volume Heatmap Bounce v1 — HVN Levels", overlay=true, max_boxes_count=200, max_lines_count=100, max_labels_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+//  VOLUME HEATMAP BOUNCE v1
+//
+//  Bookmap маягийн liquidity heatmap-ийн Pine хувилбар:
+//  Их volume арилжигдсан үнийн түвшнүүд (HVN — High Volume Node)
+//  = institutional сонирхлын бүс = үнэ ойртоход BOUNCE хийдэг.
+//
+//  ① VOLUME PROFILE — сүүлийн N bar-ийн volume-г үнийн түвшин
+//     бүрээр хуваарилж тооцно
+//  ② HEATMAP — хамгийн их volume-тэй бүсүүдийг халуунаар будна
+//     (улаан = хамгийн халуун, шар = дунд, хөх = сэрүүн)
+//  ③ BOUNCE ENTRY:
+//     · Үнэ ДЭЭРЭЭС халуун бүсэд орж + эргэлтийн лаа → BUY (support)
+//     · Үнэ ДООРООС халуун бүсэд орж + эргэлтийн лаа → SELL (resistance)
+//     SL = бүсийн цаана, TP = R:R
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_PROF = "① Volume Profile"
+string G_HEAT = "② Heatmap"
+string G_ENT  = "③ Bounce Entry"
+string G_RSK  = "④ Risk"
+
+// ─── Profile Inputs ───
+int lookback = input.int(200, "Profile lookback (bars)", minval=50, maxval=490, group=G_PROF)
+int n_bins   = input.int(40,  "Үнийн түвшний тоо (bins)", minval=10, maxval=80, group=G_PROF)
+int top_k    = input.int(6,   "Хамгийн халуун бүсийн тоо", minval=2, maxval=15, group=G_PROF)
+
+// ─── Heatmap Inputs ───
+bool show_heat = input.bool(true, "Heatmap бүс зурах", group=G_HEAT)
+int  zone_ext  = input.int(30, "Бүс сунгах (bars)", minval=5, maxval=100, group=G_HEAT)
+
+// ─── Entry Inputs ───
+bool  use_rev   = input.bool(true,  "Reversal candle баталгаа", group=G_ENT)
+float rev_body  = input.float(0.35, "Reversal биет min", minval=0.2, maxval=0.8, step=0.05, group=G_ENT)
+int   cooldown  = input.int(15, "Сигнал хоорондын зай (bars)", minval=0, maxval=100, group=G_ENT)
+bool  use_trend = input.bool(false, "EMA trend шүүлтүүр", group=G_ENT,
+     tooltip="BUY зөвхөн EMA50 дээр, SELL зөвхөн EMA50 доор")
+
+// ─── Risk ───
+int   atr_len = input.int(14,    "ATR Length", minval=1, group=G_RSK)
+float sl_buf  = input.float(0.5, "SL buffer бүсээс (ATR×)", minval=0.1, step=0.1, group=G_RSK)
+float rr1     = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=G_RSK)
+float rr2     = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RSK)
+bool  show_dash = input.bool(true, "Dashboard", group=G_RSK)
+
+// ═══════════════════════════════════════════════════════════════════
+// ① VOLUME PROFILE ТООЦООЛОЛ
+// ═══════════════════════════════════════════════════════════════════
+
+float atr_v = ta.atr(atr_len)
+float e50   = ta.ema(close, 50)
+
+// Profile-ийн хүрээ
+float range_hi = ta.highest(high, lookback)
+float range_lo = ta.lowest(low,   lookback)
+float bin_size = (range_hi - range_lo) / n_bins
+
+// Volume-г bins-д хуваарилах (bar бүр өөрийн хамрах bins-д volume-оо тараана)
+var array<float> vol_bins = array.new<float>()
+if barstate.isfirst
+    for i = 0 to 99
+        array.push(vol_bins, 0.0)
+
+// Bin-үүдийг дахин тооцох (bar бүр)
+if bin_size > 0
+    // цэвэрлэх
+    for i = 0 to n_bins - 1
+        array.set(vol_bins, i, 0.0)
+    // сүүлийн lookback bar-ийн volume хуваарилах
+    for j = 0 to lookback - 1
+        float bh = high[j]
+        float bl = low[j]
+        float bv = volume[j]
+        if not na(bh) and not na(bl) and not na(bv) and bh > bl
+            int bin_lo = math.max(0, math.min(n_bins - 1, int((bl - range_lo) / bin_size)))
+            int bin_hi = math.max(0, math.min(n_bins - 1, int((bh - range_lo) / bin_size)))
+            int span = bin_hi - bin_lo + 1
+            float v_per = bv / span
+            for b = bin_lo to bin_hi
+                array.set(vol_bins, b, array.get(vol_bins, b) + v_per)
+
+// ─── Top-K халуун бүс олох ───
+var array<float> hot_lo   = array.new<float>()   // бүсийн доод
+var array<float> hot_hi   = array.new<float>()   // бүсийн дээд
+var array<float> hot_rank = array.new<float>()   // volume эрэмбэ (0..1)
+
+array.clear(hot_lo)
+array.clear(hot_hi)
+array.clear(hot_rank)
+
+if bin_size > 0
+    // max volume олох (норм-д)
+    float vmax = 0.0
+    for i = 0 to n_bins - 1
+        vmax := math.max(vmax, array.get(vol_bins, i))
+    // top_k bins сонгох (хамгийн ихээс багаруу, давхардалгүй)
+    array<bool> used = array.new<bool>(n_bins, false)
+    if vmax > 0
+        for k = 0 to top_k - 1
+            float best_v = -1.0
+            int   best_i = -1
+            for i = 0 to n_bins - 1
+                if not array.get(used, i) and array.get(vol_bins, i) > best_v
+                    best_v := array.get(vol_bins, i)
+                    best_i := i
+            if best_i >= 0
+                array.set(used, best_i, true)
+                array.push(hot_lo,   range_lo + best_i * bin_size)
+                array.push(hot_hi,   range_lo + (best_i + 1) * bin_size)
+                array.push(hot_rank, best_v / vmax)
+
+// ═══════════════════════════════════════════════════════════════════
+// ② HEATMAP ЗУРЛАГА (зөвхөн сүүлийн bar дээр шинэчилнэ)
+// ═══════════════════════════════════════════════════════════════════
+
+var array<box> heat_boxes = array.new<box>()
+
+f_heat_color(float rank) =>
+    // rank 1.0 = хамгийн халуун (улаан), 0.5 = шар, бага = хөх
+    rank >= 0.85 ? color.new(color.rgb(255, 60, 40),  55) :
+     rank >= 0.65 ? color.new(color.rgb(255, 140, 0),  60) :
+     rank >= 0.45 ? color.new(color.rgb(255, 220, 60), 65) :
+     color.new(color.rgb(60, 140, 255), 70)
+
+if show_heat and barstate.islast
+    // хуучин box устгах
+    if array.size(heat_boxes) > 0
+        for i = 0 to array.size(heat_boxes) - 1
+            box.delete(array.get(heat_boxes, i))
+        array.clear(heat_boxes)
+    // шинэ heatmap зурах
+    if array.size(hot_lo) > 0
+        for i = 0 to array.size(hot_lo) - 1
+            float zl = array.get(hot_lo, i)
+            float zh = array.get(hot_hi, i)
+            float rk = array.get(hot_rank, i)
+            box b = box.new(bar_index - lookback, zh, bar_index + zone_ext, zl,
+                 border_color=color.new(color.gray, 85), bgcolor=f_heat_color(rk))
+            array.push(heat_boxes, b)
+
+// ═══════════════════════════════════════════════════════════════════
+// ③ BOUNCE ENTRY
+// ═══════════════════════════════════════════════════════════════════
+
+float rng  = high - low
+float body = math.abs(close - open)
+bool  rev_bull = not use_rev or (close > open and rng > 0 and body / rng >= rev_body)
+bool  rev_bear = not use_rev or (close < open and rng > 0 and body / rng >= rev_body)
+
+bool f_tr_l = not use_trend or close > e50
+bool f_tr_s = not use_trend or close < e50
+
+var int last_sig = -99999
+bool cd_ok = bar_index - last_sig >= cooldown
+
+bool  buy_sig  = false
+bool  sell_sig = false
+float entry_p  = na
+float sl_p     = na
+float zone_used_lo = na
+float zone_used_hi = na
+
+// Бүс бүрээр bounce шалгах
+if array.size(hot_lo) > 0 and cd_ok and barstate.isconfirmed
+    for i = 0 to array.size(hot_lo) - 1
+        float zl = array.get(hot_lo, i)
+        float zh = array.get(hot_hi, i)
+        // BUY bounce: үнэ дээрээс бүсэд орж (low бүс дотор), close бүсийн дээр гарсан + bull лаа
+        // мөн өмнөх хэдэн bar үнэ бүсээс ДЭЭР байсан (дээрээс ирсэн)
+        bool from_above = close[3] > zh and close[2] > zh
+        if from_above and low <= zh and low >= zl - atr_v * 0.3 and close > zh and rev_bull and f_tr_l and not buy_sig and not sell_sig
+            buy_sig      := true
+            entry_p      := close
+            sl_p         := zl - sl_buf * atr_v
+            zone_used_lo := zl
+            zone_used_hi := zh
+        // SELL bounce: үнэ доороос бүсэд орж (high бүс дотор), close бүсийн доор + bear лаа
+        bool from_below = close[3] < zl and close[2] < zl
+        if from_below and high >= zl and high <= zh + atr_v * 0.3 and close < zl and rev_bear and f_tr_s and not buy_sig and not sell_sig
+            sell_sig     := true
+            entry_p      := close
+            sl_p         := zh + sl_buf * atr_v
+            zone_used_lo := zl
+            zone_used_hi := zh
+
+if buy_sig or sell_sig
+    last_sig := bar_index
+
+// ─── TP ───
+float risk_v = buy_sig ? entry_p - sl_p : sell_sig ? sl_p - entry_p : na
+float tp1_v  = buy_sig ? entry_p + risk_v * rr1 : sell_sig ? entry_p - risk_v * rr1 : na
+float tp2_v  = buy_sig ? entry_p + risk_v * rr2 : sell_sig ? entry_p - risk_v * rr2 : na
+
+// ─── Drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+if (buy_sig or sell_sig) and risk_v > 0
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    color c = buy_sig ? color.rgb(38, 200, 120) : color.rgb(240, 80, 60)
+    e_ln  := line.new(bar_index, entry_p, r, entry_p, color=c,           width=2)
+    sl_ln := line.new(bar_index, sl_p,    r, sl_p,    color=color.red,   width=1, style=line.style_dashed)
+    t1_ln := line.new(bar_index, tp1_v,   r, tp1_v,   color=color.green, width=1, style=line.style_dashed)
+    t2_ln := line.new(bar_index, tp2_v,   r, tp2_v,   color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    e_lb  := label.new(r, entry_p, "Entry " + str.tostring(entry_p, format.mintick), color=color.new(c, 75),          textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl_lb := label.new(r, sl_p,    "SL "    + str.tostring(sl_p,    format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    t1_lb := label.new(r, tp1_v,   "TP1 "   + str.tostring(tp1_v,   format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    t2_lb := label.new(r, tp2_v,   "TP2 "   + str.tostring(tp2_v,   format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+plotshape(buy_sig,  "HVN BUY",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\n🔥", size=size.normal)
+plotshape(sell_sig, "HVN SELL", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\n🔥", size=size.normal)
+
+// ─── Winrate Tracking (TP1 = WIN + breakeven) ───
+var int   trade_dir = 0
+var float trade_sl  = na
+var float trade_tp1 = na
+var float trade_tp2 = na
+var int   wins      = 0
+var int   losses    = 0
+var int   tp2_hits  = 0
+var bool  tp1_done  = false
+
+if buy_sig and risk_v > 0
+    trade_dir := 1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+if sell_sig and risk_v > 0
+    trade_dir := -1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+
+if trade_dir == 1 and not (buy_sig or sell_sig)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == -1 and not (buy_sig or sell_sig)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 6, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    // хамгийн ойрын халуун бүс
+    float near_zone = na
+    float near_dist = 1e10
+    if array.size(hot_lo) > 0
+        for i = 0 to array.size(hot_lo) - 1
+            float mid = (array.get(hot_lo, i) + array.get(hot_hi, i)) / 2
+            float d = math.abs(close - mid)
+            if d < near_dist
+                near_dist := d
+                near_zone := mid
+    string pos_txt = trade_dir == 1 ? "📈 LONG нээлттэй" : trade_dir == -1 ? "📉 SHORT нээлттэй" : "○ Bounce хүлээж"
+    string nz_txt  = not na(near_zone) ? str.tostring(near_zone, format.mintick) + " (" + str.tostring(near_dist / atr_v, "#.#") + " ATR)" : "—"
+    string wr_txt  = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col  = na(winrate) ? color.gray : winrate >= 60 ? color.rgb(38,200,120) : winrate >= 50 ? color.rgb(255,200,0) : color.rgb(240,80,60)
+    table.cell(dash, 0, 0, " HVN Heatmap 🔥", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Төлөв",       bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, pos_txt,        bgcolor=color.rgb(14,17,28), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 2, " Ойр HVN бүс", bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, nz_txt,         bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,140,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Winrate",     bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, wr_txt,         bgcolor=color.rgb(14,17,28), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 4, " Арилжаа",     bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits), bgcolor=color.rgb(10,10,18), text_color=color.rgb(100,200,255), text_size=size.small)
+    table.cell(dash, 0, 5, " Бүсийн тоо",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, str.tostring(array.size(hot_lo)), bgcolor=color.rgb(14,17,28), text_color=color.rgb(160,175,220), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(buy_sig,  "HVN BUY",  "Volume Heatmap BUY bounce — {{ticker}} @ {{close}}")
+alertcondition(sell_sig, "HVN SELL", "Volume Heatmap SELL bounce — {{ticker}} @ {{close}}")
