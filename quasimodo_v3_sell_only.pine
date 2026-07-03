@@ -1,0 +1,286 @@
+//@version=6
+indicator("Quasimodo v3 — SELL Only, Compact 3-Wave", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=100)
+
+// ═══════════════════════════════════════════════════════════════════
+//  QUASIMODO v3 — ЗӨВХӨН SELL, COMPACT 3-WAVE
+//
+//  v2-ийн 3 засвар (хэрэглэгчийн feedback):
+//
+//  ① COMPACT WAVES — 1,2,3 оргилууд хоорондоо ОЙРХОН байх ёстой:
+//     · Хугацаагаар: оргил хоорондын зай ≤ N bars
+//     · Өсөлтөөр: оргил бүрийн өсөлт ХЯЗГААРТАЙ (их биш, бага биш)
+//     Учир: өсөлт САААРЧ оргилууд ойртож шахагдана = зах зээл
+//     ханасан (exhaustion), дээр нь liquidity цугларч буй дохио.
+//     Хүчтэй трендийн алслагдсан оргилуудыг pattern гэж андуурахгүй.
+//
+//  ② ONE-SHOT ENTRY — нэг pattern-ээс ЗӨВХӨН 1 сигнал.
+//     Head ашиглагдсан бол дахин сигнал өгөхгүй (давхардал арилна).
+//
+//  ③ SELL ONLY — зөвхөн bearish QM таньж SELL сигнал өгнө.
+//
+//        3 (HEAD)   ← оргилууд ойрхон, шахагдсан
+//      2 /\    4    ← SELL (1 л удаа)
+//    1 /\/ \  /\
+//    /\/    \/  \
+//           BOS  ⬇
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_PAT  = "① Compact Wave тохиргоо"
+string G_ENT  = "② W4 Entry"
+string G_RISK = "③ Risk"
+string G_VIS  = "④ Visual"
+
+// ─── Pattern Inputs ───
+int   piv_len   = input.int(5,  "Pivot Length", minval=2, maxval=15, group=G_PAT)
+int   max_gap   = input.int(25, "Оргил хоорондын max зай (bars)", minval=5, maxval=100, group=G_PAT,
+     tooltip="1→2, 2→3 оргилуудын хоорондох bar-ийн тоо энэ хэмжээнээс ихгүй байх — ойрхон шахагдсан wave")
+float w_min     = input.float(0.1, "Wave min өсөлт (ATR×)", minval=0.0, step=0.05, group=G_PAT,
+     tooltip="Оргил бүр өмнөхөөсөө өндөр байх min хэмжээ")
+float w_max     = input.float(2.0, "Wave max өсөлт (ATR×)", minval=0.5, step=0.25, group=G_PAT,
+     tooltip="Оргил бүрийн өсөлт энэ хэмжээнээс ИХГҮЙ байх — огцом өссөн хүчтэй трендийг pattern гэж үзэхгүй. Exhaustion = жижиг алхмаар өсөлт")
+int   max_age   = input.int(60, "W4 хүлээх хугацаа (bars)", minval=20, maxval=200, group=G_PAT)
+
+// ─── Entry Inputs ───
+float ls_zone   = input.float(0.5, "W4 entry бүс (ATR×)", minval=0.1, step=0.1, group=G_ENT)
+bool  use_rev   = input.bool(true, "Reversal candle баталгаа", group=G_ENT)
+float rev_body  = input.float(0.35, "Reversal биет min", minval=0.2, maxval=0.8, step=0.05, group=G_ENT)
+bool  use_htf   = input.bool(false, "HTF EMA шүүлтүүр (SELL: close < HTF EMA)", group=G_ENT)
+string htf_tf   = input.timeframe("60", "HTF Timeframe", group=G_ENT)
+int   htf_len   = input.int(50, "HTF EMA Length", minval=1, group=G_ENT)
+
+// ─── Risk ───
+int   atr_len = input.int(14,    "ATR Length", minval=1, group=G_RISK)
+float sl_buf  = input.float(0.5, "SL buffer head-ээс (ATR×)", minval=0.0, step=0.1, group=G_RISK)
+float rr1     = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=G_RISK)
+float rr2     = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RISK)
+
+// ─── Visual ───
+color col_bear   = input.color(color.rgb(240, 80, 60), "Bear өнгө", group=G_VIS)
+bool  show_waves = input.bool(true, "Wave дугаар (1,2,3)", group=G_VIS)
+bool  show_ls    = input.bool(true, "W4 entry бүс", group=G_VIS)
+bool  show_dash  = input.bool(true, "Dashboard", group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+// PIVOT TRACKING
+// ═══════════════════════════════════════════════════════════════════
+
+float atr_v   = ta.atr(atr_len)
+float htf_ema = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_len), lookahead=barmerge.lookahead_off)
+bool  f_htf_s = not use_htf or close < htf_ema
+
+float ph = ta.pivothigh(high, piv_len, piv_len)
+float pl = ta.pivotlow(low,   piv_len, piv_len)
+
+var float h1 = na
+var float h2 = na
+var float h3 = na
+var int   h1_bar = na
+var int   h2_bar = na
+var int   h3_bar = na
+var float l1 = na
+var int   l1_bar = na
+
+if not na(ph)
+    h3     := h2
+    h3_bar := h2_bar
+    h2     := h1
+    h2_bar := h1_bar
+    h1     := ph
+    h1_bar := bar_index - piv_len
+if not na(pl)
+    l1     := pl
+    l1_bar := bar_index - piv_len
+
+// ═══════════════════════════════════════════════════════════════════
+// ① COMPACT 3-WAVE STRUCTURE (bearish only)
+// ═══════════════════════════════════════════════════════════════════
+
+// Гурван дараалан өсөх оргил
+bool rising_3 = not na(h1) and not na(h2) and not na(h3) and
+     not na(h1_bar) and not na(h2_bar) and not na(h3_bar) and
+     h3_bar < h2_bar and h2_bar < h1_bar and
+     h1 > h2 and h2 > h3
+
+// Өсөлтийн хэмжээ: min < өсөлт < max (шахагдсан exhaustion wave)
+float rise_21 = h2 - h3
+float rise_32 = h1 - h2
+bool  rise_ok = rising_3 and
+     rise_21 >= w_min * atr_v and rise_21 <= w_max * atr_v and
+     rise_32 >= w_min * atr_v and rise_32 <= w_max * atr_v
+
+// Хугацааны ойролцоо байдал: оргил хоорондын зай хязгаартай
+bool gap_ok = rising_3 and
+     (h2_bar - h3_bar) <= max_gap and
+     (h1_bar - h2_bar) <= max_gap
+
+bool bear_3wave = rise_ok and gap_ok
+
+// ═══════════════════════════════════════════════════════════════════
+// STATE MACHINE + ② ONE-SHOT (head давхардлын хамгаалалт)
+// ═══════════════════════════════════════════════════════════════════
+
+var int   qm_state      = 0     // 0=idle, 1=armed (W4 хүлээж)
+var float qm_ls         = na
+var float qm_head       = na
+var int   qm_bar        = na
+var int   used_head_bar = na    // аль хэдийн сигнал өгсөн head — дахин ашиглахгүй
+var box   ls_box        = na
+var line  head_ln       = na
+
+// Дараалал: l1 (BOS түвшин) нь head-ийн ДАРАА үүссэн хонхор байх ёстой
+bool seq_ok = not na(l1_bar) and not na(h1_bar) and l1_bar > h1_bar
+
+// BOS: 3 wave + зөв дараалал + үнэ хонхорыг эвдсэн + энэ head өмнө ашиглагдаагүй
+bool bear_bos = bear_3wave and seq_ok and not na(l1) and close < l1 and qm_state == 0 and
+     (na(used_head_bar) or h1_bar != used_head_bar)
+
+if bear_bos
+    qm_state := 1
+    qm_ls    := h2
+    qm_head  := h1
+    qm_bar   := bar_index
+    if show_waves
+        label.new(h3_bar, h3, "1", color=color.new(col_bear, 55), textcolor=color.white, style=label.style_label_down, size=size.small)
+        label.new(h2_bar, h2, "2", color=color.new(col_bear, 45), textcolor=color.white, style=label.style_label_down, size=size.small)
+        label.new(h1_bar, h1, "3 HEAD", color=color.new(col_bear, 20), textcolor=color.white, style=label.style_label_down, size=size.normal)
+    if show_ls
+        box.delete(ls_box)
+        ls_box := box.new(bar_index, qm_ls + ls_zone * atr_v, bar_index + max_age, qm_ls - ls_zone * atr_v,
+             border_color=color.new(col_bear, 50), bgcolor=color.new(col_bear, 88))
+        line.delete(head_ln)
+        head_ln := line.new(bar_index, qm_head, bar_index + max_age, qm_head, color=color.new(color.red, 40), width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════════════════════════════════
+// W4 SELL ENTRY (нэг л удаа)
+// ═══════════════════════════════════════════════════════════════════
+
+float rng  = high - low
+float body = math.abs(close - open)
+bool  rev_bear_c = not use_rev or (close < open and rng > 0 and body / rng >= rev_body)
+
+bool  short_entry = false
+float entry_p     = na
+float sl_p        = na
+
+// Arming үеийн head bar-г хадгална (one-shot хамгаалалтад)
+var int armed_head_bar = na
+if bear_bos
+    armed_head_bar := h1_bar
+
+if qm_state == 1
+    // Хүчингүй: head давсан эсвэл хугацаа дууссан
+    if close > qm_head or bar_index - qm_bar > max_age
+        qm_state := 0
+        box.delete(ls_box)
+        line.delete(head_ln)
+    else if high >= qm_ls - ls_zone * atr_v and close < qm_head and rev_bear_c and f_htf_s
+        short_entry   := true
+        entry_p       := close
+        sl_p          := qm_head + sl_buf * atr_v
+        qm_state      := 0
+        // ② ONE-SHOT: энэ head-ийг тэмдэглэж дахин сигнал өгөхгүй
+        used_head_bar := armed_head_bar
+        box.delete(ls_box)
+        line.delete(head_ln)
+
+// ─── TP ───
+float risk_s = short_entry ? sl_p - entry_p : na
+float tp1_s  = short_entry ? entry_p - risk_s * rr1 : na
+float tp2_s  = short_entry ? entry_p - risk_s * rr2 : na
+
+// ─── Drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+if short_entry and risk_s > 0
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    e_ln  := line.new(bar_index, entry_p, r, entry_p, color=col_bear,   width=2)
+    sl_ln := line.new(bar_index, sl_p,    r, sl_p,    color=color.red,  width=1, style=line.style_dashed)
+    t1_ln := line.new(bar_index, tp1_s,   r, tp1_s,   color=color.green,width=1, style=line.style_dashed)
+    t2_ln := line.new(bar_index, tp2_s,   r, tp2_s,   color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    e_lb  := label.new(r, entry_p, "Entry " + str.tostring(entry_p, format.mintick), color=color.new(col_bear, 75),   textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl_lb := label.new(r, sl_p,    "SL "    + str.tostring(sl_p,    format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    t1_lb := label.new(r, tp1_s,   "TP1 "   + str.tostring(tp1_s,   format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    t2_lb := label.new(r, tp2_s,   "TP2 "   + str.tostring(tp2_s,   format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// ─── Signal label ───
+plotshape(short_entry, "W4 SELL", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60), 0), textcolor=color.white, text="SELL\nW4", size=size.normal)
+
+if short_entry
+    label.new(bar_index, high + atr_v * 2.2, "4", color=color.new(col_bear, 35), textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// ─── Winrate Tracking (TP1 = WIN + breakeven) ───
+var int   trade_on   = 0
+var float trade_sl   = na
+var float trade_tp1  = na
+var float trade_tp2  = na
+var int   wins       = 0
+var int   losses     = 0
+var int   tp2_hits   = 0
+var bool  tp1_done   = false
+
+if short_entry and risk_s > 0
+    trade_on  := 1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_s
+    trade_tp2 := tp2_s
+    tp1_done  := false
+
+if trade_on == 1 and not short_entry
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits := tp2_hits + 1
+        trade_on := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_on := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 7, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string st_txt = qm_state == 1 ? "🔻 Compact 3-Wave — W4 хүлээж" : trade_on != 0 ? "📉 SHORT нээлттэй" : "○ Шахагдсан 1-2-3 хайж"
+    color  st_col = qm_state == 1 ? col_bear : color.rgb(160,175,220)
+    string ls_txt = qm_state != 0 ? str.tostring(qm_ls, format.mintick) : "—"
+    string hd_txt = qm_state != 0 ? str.tostring(qm_head, format.mintick) : "—"
+    string wr_txt = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col = na(winrate) ? color.gray : winrate >= 60 ? color.rgb(38,200,120) : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    string tt_txt = str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits)
+    table.cell(dash, 0, 0, " QM v3 — SELL 🔻", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Төлөв",         bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, st_txt,           bgcolor=color.rgb(14,17,28), text_color=st_col, text_size=size.small)
+    table.cell(dash, 0, 2, " W4 entry (W2)", bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, ls_txt,           bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Head W3 (SL)",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, hd_txt,           bgcolor=color.rgb(14,17,28), text_color=color.rgb(220,40,80), text_size=size.small)
+    table.cell(dash, 0, 4, " Winrate",       bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, wr_txt,           bgcolor=color.rgb(10,10,18), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 5, " Арилжаа",       bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, tt_txt,           bgcolor=color.rgb(14,17,28), text_color=color.rgb(100,200,255), text_size=size.small)
+    table.cell(dash, 0, 6, " ATR",           bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 6, str.tostring(atr_v, format.mintick), bgcolor=color.rgb(10,10,18), text_color=color.rgb(160,175,220), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(short_entry, "QM v3 SELL (W4)", "Quasimodo v3 W4 SELL — {{ticker}} @ {{close}}")
+alertcondition(qm_state == 1 and qm_state[1] == 0, "Compact 3-Wave олдлоо", "QM v3: шахагдсан 1-2-3 + BOS — {{ticker}}, W4 SELL хүлээж байна")
