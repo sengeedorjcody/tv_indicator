@@ -1,0 +1,280 @@
+//@version=6
+indicator("Trend Pullback Sniper v1 — ST+EMA+StochRSI", overlay=true, max_lines_count=300, max_labels_count=300)
+
+// ═══════════════════════════════════════════════════════════════════
+//  Trend Pullback Sniper v1
+//  ─ Inducement ашиглаагүй ӨӨР аргачлал: Trend дагасан Pullback entry
+//
+//  Яагаад өндөр winrate вэ?
+//  Trend-ийн эсрэг биш, зөвхөн trend ДАГАЖ, үнэ түр буцаж ирэх
+//  (pullback) мөчид ордог. "Buy the dip in uptrend" — статистикийн
+//  хувьд хамгийн тогтвортой өндөр магадлалтай загвар.
+//
+//  4 давхар баталгаа:
+//   ① SUPERTREND  — том чиглэл (энэ дагуу л ордог)
+//   ② EMA PULLBACK — үнэ EMA21 бүс рүү буцаж ирсэн (сайн үнэ)
+//   ③ STOCHRSI CROSS — pullback дуусч эргэж буйг баталгаажуулна
+//   ④ MOMENTUM CANDLE — эргэлтийн лаа trend чиглэлд хаагдсан
+//
+//  + ADX шүүлтүүр (range зах зээлд ордоггүй)
+//  + HTF EMA шүүлтүүр (дээд timeframe-тэй зөрөхгүй)
+//  + Winrate dashboard
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_TREND = "① Trend (Supertrend + EMA)"
+string G_PULL  = "② Pullback Entry"
+string G_QLT   = "③ Чанарын шүүлтүүр"
+string G_RISK  = "④ Risk"
+string G_VIS   = "⑤ Visual"
+
+// ─── Trend Inputs ───
+int   st_len    = input.int(10,    "Supertrend ATR Length", minval=1, group=G_TREND)
+float st_mult   = input.float(3.0, "Supertrend Multiplier", minval=0.5, step=0.5, group=G_TREND)
+int   ema_fast  = input.int(21,    "Pullback EMA",          minval=5, group=G_TREND)
+int   ema_slow  = input.int(50,    "Trend EMA",             minval=10, group=G_TREND)
+bool  use_htf   = input.bool(true, "HTF EMA шүүлтүүр",      group=G_TREND)
+string htf_tf   = input.timeframe("60", "HTF Timeframe",    group=G_TREND)
+int   htf_len   = input.int(50,    "HTF EMA Length",        minval=1, group=G_TREND)
+
+// ─── Pullback Inputs ───
+float pull_atr  = input.float(0.5, "Pullback бүс (EMA21 ± ATR×)", minval=0.1, step=0.1, group=G_PULL,
+     tooltip="Үнэ EMA21-ээс энэ зайд ойртвол pullback гэж үзнэ")
+int   srsi_len  = input.int(14, "StochRSI Length",  minval=2, group=G_PULL)
+int   srsi_k    = input.int(3,  "StochRSI %K",      minval=1, group=G_PULL)
+int   srsi_d    = input.int(3,  "StochRSI %D",      minval=1, group=G_PULL)
+float srsi_os   = input.float(30, "Oversold түвшин",  minval=5,  maxval=45, group=G_PULL)
+float srsi_ob   = input.float(70, "Overbought түвшин", minval=55, maxval=95, group=G_PULL)
+
+// ─── Quality Filters ───
+bool  use_adx   = input.bool(true, "ADX шүүлтүүр (range-д ордоггүй)", group=G_QLT)
+float min_adx   = input.float(20,  "Min ADX", minval=10, maxval=40, group=G_QLT)
+bool  use_mom   = input.bool(true, "Momentum candle баталгаа", group=G_QLT,
+     tooltip="Entry лаа нь trend чиглэлд, биет/далайц ≥ 40% байх ёстой")
+float mom_body  = input.float(0.40, "Momentum биет min", minval=0.2, maxval=0.8, step=0.05, group=G_QLT)
+bool  use_kz    = input.bool(false, "Killzone цаг (UTC 07-11, 12-16)", group=G_QLT)
+int   cooldown  = input.int(10, "Сигнал хоорондын зай (bars)", minval=0, maxval=50, group=G_QLT,
+     tooltip="Дараалсан сигналуудын хооронд хамгийн багадаа энэ хэмжээний bar байна")
+
+// ─── Risk ───
+int   atr_len   = input.int(14,    "ATR Length", minval=1, group=G_RISK)
+float sl_mult   = input.float(1.5, "SL (ATR×)",  minval=0.5, step=0.1, group=G_RISK)
+float rr1       = input.float(1.0, "TP1 R:R",    minval=0.5, step=0.1, group=G_RISK)
+float rr2       = input.float(2.0, "TP2 R:R",    minval=1.0, step=0.5, group=G_RISK)
+
+// ─── Visual ───
+color col_bull = input.color(color.rgb(38, 200, 120), "Bull", group=G_VIS)
+color col_bear = input.color(color.rgb(240, 80, 60),  "Bear", group=G_VIS)
+bool  show_st  = input.bool(true, "Supertrend шугам",  group=G_VIS)
+bool  show_ema = input.bool(true, "EMA шугамууд",      group=G_VIS)
+bool  show_dash= input.bool(true, "Dashboard",         group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+float atr_v = ta.atr(atr_len)
+float e21   = ta.ema(close, ema_fast)
+float e50   = ta.ema(close, ema_slow)
+[di_p, di_m, adx_v] = ta.dmi(14, 14)
+float htf_ema = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_len), lookahead=barmerge.lookahead_off)
+
+// ─── ① Supertrend ───
+[st_line, st_dir] = ta.supertrend(st_mult, st_len)
+bool st_bull = st_dir < 0    // supertrend доор нь = uptrend
+bool st_bear = st_dir > 0
+
+// ─── StochRSI ───
+float rsi_raw = ta.rsi(close, srsi_len)
+float srsi    = ta.stoch(rsi_raw, rsi_raw, rsi_raw, srsi_len)
+float k_val   = ta.sma(srsi, srsi_k)
+float d_val   = ta.sma(k_val, srsi_d)
+bool  srsi_cross_up   = ta.crossover(k_val, d_val)
+bool  srsi_cross_down = ta.crossunder(k_val, d_val)
+
+// ─── ② Pullback бүс ───
+// Uptrend: үнэ EMA21 орчимд (доош нь хүрсэн) байх
+// Downtrend: үнэ EMA21 орчимд (дээш нь хүрсэн) байх
+bool near_ema_bull = low  <= e21 + pull_atr * atr_v and close > st_line
+bool near_ema_bear = high >= e21 - pull_atr * atr_v and close < st_line
+
+// StochRSI oversold/overbought бүсээс гарч буй cross
+bool srsi_buy_ok  = srsi_cross_up   and d_val < srsi_os + 15
+bool srsi_sell_ok = srsi_cross_down and d_val > srsi_ob - 15
+
+// ─── ③ Filters ───
+bool f_adx   = not use_adx or adx_v >= min_adx
+int  h_utc   = hour(time, "UTC")
+bool f_kz    = not use_kz or ((h_utc >= 7 and h_utc < 11) or (h_utc >= 12 and h_utc < 16))
+bool f_htf_l = not use_htf or close > htf_ema
+bool f_htf_s = not use_htf or close < htf_ema
+
+// ─── ④ Momentum candle ───
+float rng    = high - low
+float body   = math.abs(close - open)
+bool mom_bull = not use_mom or (close > open and rng > 0 and body / rng >= mom_body)
+bool mom_bear = not use_mom or (close < open and rng > 0 and body / rng >= mom_body)
+
+// ─── Cooldown ───
+var int last_sig_bar = -9999
+bool cd_ok = bar_index - last_sig_bar >= cooldown
+
+// ─── СИГНАЛУУД ───
+bool long_entry  = st_bull and close > e50 and near_ema_bull and srsi_buy_ok  and mom_bull and f_adx and f_kz and f_htf_l and cd_ok
+bool short_entry = st_bear and close < e50 and near_ema_bear and srsi_sell_ok and mom_bear and f_adx and f_kz and f_htf_s and cd_ok
+
+if long_entry or short_entry
+    last_sig_bar := bar_index
+
+// ─── Entry / SL / TP ───
+float entry_p = close
+float sl_l    = close - atr_v * sl_mult
+float sl_s    = close + atr_v * sl_mult
+float risk_l  = long_entry  ? entry_p - sl_l : na
+float tp1_l   = long_entry  ? entry_p + risk_l * rr1 : na
+float tp2_l   = long_entry  ? entry_p + risk_l * rr2 : na
+float risk_s  = short_entry ? sl_s - entry_p : na
+float tp1_s   = short_entry ? entry_p - risk_s * rr1 : na
+float tp2_s   = short_entry ? entry_p - risk_s * rr2 : na
+
+// ─── Drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+f_draw(float ep, float sp, float t1, float t2, color c) =>
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    e  = line.new(bar_index, ep, r, ep, color=c,           width=2)
+    s  = line.new(bar_index, sp, r, sp, color=color.red,   width=1, style=line.style_dashed)
+    a  = line.new(bar_index, t1, r, t1, color=color.green, width=1, style=line.style_dashed)
+    b  = line.new(bar_index, t2, r, t2, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    el = label.new(r, ep, "Entry " + str.tostring(ep, format.mintick), color=color.new(c, 75),          textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl = label.new(r, sp, "SL "    + str.tostring(sp, format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    l1 = label.new(r, t1, "TP1 "   + str.tostring(t1, format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    l2 = label.new(r, t2, "TP2 "   + str.tostring(t2, format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+    [e, s, a, b, el, sl, l1, l2]
+
+if long_entry and risk_l > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_l, tp1_l, tp2_l, col_bull)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+if short_entry and risk_s > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_s, tp1_s, tp2_s, col_bear)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+// ─── Plots ───
+plot(show_st ? st_line : na, "Supertrend", color=st_bull ? color.new(col_bull, 30) : color.new(col_bear, 30), linewidth=2, style=plot.style_linebr)
+plot(show_ema ? e21 : na, "EMA21", color=color.new(color.yellow, 30), linewidth=1)
+plot(show_ema ? e50 : na, "EMA50", color=color.new(color.orange, 30), linewidth=2)
+
+plotshape(long_entry,  "LONG",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\n🎯", size=size.normal)
+plotshape(short_entry, "SHORT", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\n🎯", size=size.normal)
+
+// ─── Winrate Tracking (TP1 = WIN, дараа нь breakeven) ───
+var int   trade_dir  = 0
+var float trade_sl   = na
+var float trade_tp1  = na
+var float trade_tp2  = na
+var int   wins       = 0
+var int   losses     = 0
+var int   tp2_hits   = 0
+var bool  tp1_done   = false
+
+if long_entry and risk_l > 0
+    trade_dir := 1
+    trade_sl  := sl_l
+    trade_tp1 := tp1_l
+    trade_tp2 := tp2_l
+    tp1_done  := false
+if short_entry and risk_s > 0
+    trade_dir := -1
+    trade_sl  := sl_s
+    trade_tp1 := tp1_s
+    trade_tp2 := tp2_s
+    tp1_done  := false
+
+if trade_dir == 1 and not (long_entry or short_entry)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == -1 and not (long_entry or short_entry)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 8, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string tr_txt  = st_bull ? "▲ Uptrend" : "▼ Downtrend"
+    color  tr_col  = st_bull ? col_bull : col_bear
+    string pos_txt = trade_dir == 1 ? "📈 LONG нээлттэй" : trade_dir == -1 ? "📉 SHORT нээлттэй" : "○ Хүлээж байна"
+    string wr_txt  = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col  = na(winrate) ? color.gray : winrate >= 60 ? col_bull : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    string tt_txt  = str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits)
+    string pb_txt  = st_bull ? (near_ema_bull ? "✅ Pullback бүсэд" : "— хүлээж") : (near_ema_bear ? "✅ Pullback бүсэд" : "— хүлээж")
+    string sr_txt  = "K:" + str.tostring(k_val, "#.#") + " D:" + str.tostring(d_val, "#.#")
+    table.cell(dash, 0, 0, " Pullback Sniper 🎯", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Supertrend", bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, tr_txt,        bgcolor=color.rgb(14,17,28), text_color=tr_col, text_size=size.small)
+    table.cell(dash, 0, 2, " Байрлал",    bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, pos_txt,       bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Pullback",   bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, pb_txt,        bgcolor=color.rgb(14,17,28), text_color=color.rgb(0,200,255), text_size=size.small)
+    table.cell(dash, 0, 4, " StochRSI",   bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, sr_txt,        bgcolor=color.rgb(10,10,18), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 5, " ADX",        bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, str.tostring(adx_v, "#.#") + (f_adx ? " ✅" : " ❌ сул"), bgcolor=color.rgb(14,17,28), text_color=f_adx ? col_bull : col_bear, text_size=size.small)
+    table.cell(dash, 0, 6, " Winrate",    bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 6, wr_txt,        bgcolor=color.rgb(10,10,18), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 7, " Арилжаа",    bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 7, tt_txt,        bgcolor=color.rgb(14,17,28), text_color=color.rgb(100,200,255), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(long_entry,  "Sniper LONG",  "Pullback Sniper LONG — {{ticker}} @ {{close}}")
+alertcondition(short_entry, "Sniper SHORT", "Pullback Sniper SHORT — {{ticker}} @ {{close}}")
