@@ -1,0 +1,343 @@
+//@version=6
+strategy("Inducement Entry Pro v8 — STRATEGY", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=0.05,
+     max_lines_count=300, max_labels_count=300, max_boxes_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+//  INDUCEMENT ENTRY PRO v8 — STRATEGY ХУВИЛБАР
+//  Indicator-ийн бүх логик хэвээр + Strategy Tester backtest:
+//   · TP1 дээр позицийн 50% хаана + SL-г breakeven руу шилжүүлнэ
+//   · Үлдсэн 50% TP2 дээр хаана
+//   · Strategy Tester: winrate, profit factor, drawdown, equity curve
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_CORE  = "① IDM Core"
+string G_POI   = "② POI Entry"
+string G_QLT   = "③ Чанарын шүүлтүүр"
+string G_RISK  = "④ Risk"
+string G_VIS   = "⑤ Visual"
+
+// ─── Core Inputs ───
+int   swing_len   = input.int(5,  "Major Swing Length", minval=2,  group=G_CORE)
+int   idm_len     = input.int(3,  "IDM Swing Length",   minval=1,  group=G_CORE)
+int   idm_expire  = input.int(60, "IDM Expire (bars)",  minval=10, group=G_CORE)
+
+// ─── POI Inputs ───
+bool  use_ob   = input.bool(true, "OB POI ашиглах",  group=G_POI)
+bool  use_fvg  = input.bool(true, "FVG POI ашиглах", group=G_POI)
+int   poi_wait = input.int(25,    "POI Retest хүлээх (bars)", minval=3, maxval=100, group=G_POI)
+
+// ─── Quality Filters ───
+float min_sweep_atr  = input.float(0.3,  "Min Sweep гүн (ATR×)", minval=0.0, step=0.1, group=G_QLT)
+bool  use_rev_candle = input.bool(true,  "Reversal candle баталгаа", group=G_QLT)
+float rev_body_min   = input.float(0.35, "Reversal биет/далайц min", minval=0.1, maxval=0.9, step=0.05, group=G_QLT)
+bool  use_rsi        = input.bool(true,  "RSI extreme шүүлтүүр", group=G_QLT)
+int   rsi_len        = input.int(14, "RSI Length", minval=2, group=G_QLT)
+int   min_score      = input.int(4,  "Min Confluence оноо (5-аас)", minval=1, maxval=5, group=G_QLT)
+
+// ─── Risk ───
+bool  use_atr_sl = input.bool(true, "ATR-Adaptive SL", group=G_RISK)
+float atr_mult   = input.float(1.0, "ATR SL Mult", minval=0.1, step=0.1, group=G_RISK)
+int   atr_len    = input.int(14,    "ATR Length",  minval=1, group=G_RISK)
+float rr1        = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=G_RISK)
+float rr2        = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RISK)
+int   tp1_pct    = input.int(50,    "TP1 дээр хаах хувь (%)", minval=10, maxval=90, step=10, group=G_RISK)
+bool  be_after_tp1 = input.bool(true, "TP1 дараа SL → Breakeven", group=G_RISK)
+
+// ─── Filters ───
+bool   use_htf   = input.bool(true,      "HTF EMA Filter", group=G_QLT)
+string htf_tf    = input.timeframe("60", "HTF Timeframe",  group=G_QLT)
+int    htf_ema_l = input.int(50,         "HTF EMA Length", minval=1, group=G_QLT)
+bool   use_kz    = input.bool(false,     "Killzone цагийн шүүлтүүр (UTC)", group=G_QLT)
+bool   use_sess  = input.bool(false,     "Custom Session Filter", group=G_QLT)
+string sess      = input.session("0800-1700", "Session", group=G_QLT)
+
+// ─── Visual ───
+color col_bull  = input.color(color.rgb(38, 200, 120), "Bull", group=G_VIS)
+color col_bear  = input.color(color.rgb(240, 80, 60),  "Bear", group=G_VIS)
+color col_poi   = input.color(color.new(color.rgb(255, 190, 0), 75), "POI Zone", group=G_VIS)
+bool  show_idm  = input.bool(true, "IDM тэмдэглэгээ",   group=G_VIS)
+bool  show_poi  = input.bool(true, "POI зона харуулах", group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATIONS (indicator v8-тай яг ижил)
+// ═══════════════════════════════════════════════════════════════════
+
+float atr_v    = ta.atr(atr_len)
+float rsi_v    = ta.rsi(close, rsi_len)
+float ema50    = ta.ema(close, 50)
+float vol_sma  = ta.sma(volume, 20)
+[di_p, di_m, adx_v] = ta.dmi(14, 14)
+float htf_ema  = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_ema_l), lookahead=barmerge.lookahead_off)
+
+int h_utc = hour(time, "UTC")
+bool in_kz   = not use_kz or ((h_utc >= 7 and h_utc < 11) or (h_utc >= 12 and h_utc < 16))
+bool in_sess = not use_sess or not na(time(timeframe.period, sess))
+bool f_time  = in_kz and in_sess
+
+bool f_htf_l = not use_htf or close > htf_ema
+bool f_htf_s = not use_htf or close < htf_ema
+bool f_rsi_l = not use_rsi or rsi_v < 70
+bool f_rsi_s = not use_rsi or rsi_v > 30
+
+// ─── Market Structure ───
+float mph = ta.pivothigh(high, swing_len, swing_len)
+float mpl = ta.pivotlow(low,   swing_len, swing_len)
+
+var float major_high = na
+var float major_low  = na
+var int   trend      = 0
+
+if not na(mph)
+    major_high := mph
+if not na(mpl)
+    major_low := mpl
+
+bool bos_up   = not na(major_high) and close > major_high
+bool bos_down = not na(major_low)  and close < major_low
+if bos_up
+    trend := 1
+    major_high := na
+if bos_down
+    trend := -1
+    major_low := na
+
+// ─── IDM Detection ───
+float iph = ta.pivothigh(high, idm_len, idm_len)
+float ipl = ta.pivotlow(low,   idm_len, idm_len)
+
+var float idm_bull_price = na
+var int   idm_bull_bar   = na
+var float idm_bull_sl    = na
+var float idm_bear_price = na
+var int   idm_bear_bar   = na
+var float idm_bear_sl    = na
+
+if trend == 1 and not na(ipl)
+    idm_bull_price := ipl
+    idm_bull_bar   := bar_index - idm_len
+    idm_bull_sl    := low[idm_len]
+if trend == -1 and not na(iph)
+    idm_bear_price := iph
+    idm_bear_bar   := bar_index - idm_len
+    idm_bear_sl    := high[idm_len]
+
+if not na(idm_bull_bar) and bar_index - idm_bull_bar > idm_expire
+    idm_bull_price := na
+    idm_bull_bar   := na
+if not na(idm_bear_bar) and bar_index - idm_bear_bar > idm_expire
+    idm_bear_price := na
+    idm_bear_bar   := na
+
+// ─── Sweep + чанар ───
+float sweep_depth_bull = not na(idm_bull_price) ? (idm_bull_price - low)  / atr_v : na
+float sweep_depth_bear = not na(idm_bear_price) ? (high - idm_bear_price) / atr_v : na
+
+bool sweep_bull_raw = trend == 1  and not na(idm_bull_price) and low  <= idm_bull_price and close > idm_bull_price
+bool sweep_bear_raw = trend == -1 and not na(idm_bear_price) and high >= idm_bear_price and close < idm_bear_price
+
+bool sweep_deep_bull = min_sweep_atr <= 0 or (not na(sweep_depth_bull) and sweep_depth_bull >= min_sweep_atr)
+bool sweep_deep_bear = min_sweep_atr <= 0 or (not na(sweep_depth_bear) and sweep_depth_bear >= min_sweep_atr)
+
+bool sweep_bull = sweep_bull_raw and sweep_deep_bull
+bool sweep_bear = sweep_bear_raw and sweep_deep_bear
+
+// ─── Confluence Score ───
+f_score_long() =>
+    int s = 0
+    s += close > htf_ema ? 1 : 0
+    s += adx_v > 20 ? 1 : 0
+    s += volume > vol_sma ? 1 : 0
+    s += sweep_deep_bull ? 1 : 0
+    s += close > ema50 ? 1 : 0
+    s
+
+f_score_short() =>
+    int s = 0
+    s += close < htf_ema ? 1 : 0
+    s += adx_v > 20 ? 1 : 0
+    s += volume > vol_sma ? 1 : 0
+    s += sweep_deep_bear ? 1 : 0
+    s += close < ema50 ? 1 : 0
+    s
+
+// ─── POI Detection ───
+f_find_bull_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] < open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+f_find_bear_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] > open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+bool  has_bull_fvg = low > high[2]
+float bfvg_t = has_bull_fvg ? low     : na
+float bfvg_b = has_bull_fvg ? high[2] : na
+bool  has_bear_fvg = high < low[2]
+float sfvg_t = has_bear_fvg ? low[2]  : na
+float sfvg_b = has_bear_fvg ? high    : na
+
+// ─── Setup state machine ───
+var int   setup      = 0
+var float poi_top    = na
+var float poi_bot    = na
+var float setup_sl   = na
+var int   setup_bar  = na
+var box   poi_box    = na
+
+int cur_score_l = f_score_long()
+if sweep_bull and f_htf_l and f_time and setup == 0 and cur_score_l >= min_score
+    [ob_t, ob_b] = f_find_bull_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(bfvg_t) and (na(pt) or bfvg_t < pt)
+        pt := bfvg_t
+        pb := bfvg_b
+    if not na(pt) and pt < close
+        setup     := 1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.min(idm_bull_sl, pb)
+        setup_bar := bar_index
+        idm_bull_price := na
+        if show_idm
+            label.new(bar_index, low, "IDM ⤵ " + str.tostring(cur_score_l) + "/5", color=color.new(col_bull, 20), textcolor=color.white, style=label.style_label_up, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bull, 40), bgcolor=col_poi)
+
+int cur_score_s = f_score_short()
+if sweep_bear and f_htf_s and f_time and setup == 0 and cur_score_s >= min_score
+    [ob_t, ob_b] = f_find_bear_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(sfvg_t) and (na(pb) or sfvg_b > pb)
+        pt := sfvg_t
+        pb := sfvg_b
+    if not na(pb) and pb > close
+        setup     := -1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.max(idm_bear_sl, pt)
+        setup_bar := bar_index
+        idm_bear_price := na
+        if show_idm
+            label.new(bar_index, high, "IDM ⤴ " + str.tostring(cur_score_s) + "/5", color=color.new(col_bear, 20), textcolor=color.white, style=label.style_label_down, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bear, 40), bgcolor=col_poi)
+
+// ─── Reversal candle ───
+float bar_range = high - low
+float bar_body  = math.abs(close - open)
+bool  body_ok   = bar_range > 0 and bar_body / bar_range >= rev_body_min
+bool  rev_bull  = not use_rev_candle or (close > open and body_ok)
+bool  rev_bear  = not use_rev_candle or (close < open and body_ok)
+
+// ─── Entry сигнал ───
+bool long_entry  = false
+bool short_entry = false
+float entry_p    = na
+float sl_p       = na
+
+if setup == 1
+    if bar_index - setup_bar > poi_wait or close < setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if low <= poi_top and close > poi_bot and rev_bull and f_rsi_l
+        long_entry := true
+        entry_p    := close
+        sl_p       := use_atr_sl ? setup_sl - atr_v * atr_mult : setup_sl
+        setup      := 0
+
+if setup == -1
+    if bar_index - setup_bar > poi_wait or close > setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if high >= poi_bot and close < poi_top and rev_bear and f_rsi_s
+        short_entry := true
+        entry_p     := math.max(close, poi_bot)
+        sl_p        := use_atr_sl ? setup_sl + atr_v * atr_mult : setup_sl
+        setup       := 0
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY EXECUTION — TP1 (хагас) + Breakeven + TP2
+// ═══════════════════════════════════════════════════════════════════
+
+var float trade_entry = na
+var float trade_sl_v  = na
+var float trade_tp1   = na
+var float trade_tp2   = na
+var bool  tp1_hit     = false
+
+// LONG
+if long_entry and strategy.position_size == 0
+    float risk = entry_p - sl_p
+    if risk > 0
+        trade_entry := entry_p
+        trade_sl_v  := sl_p
+        trade_tp1   := entry_p + risk * rr1
+        trade_tp2   := entry_p + risk * rr2
+        tp1_hit     := false
+        strategy.entry("Long", strategy.long)
+
+// SHORT
+if short_entry and strategy.position_size == 0
+    float risk = sl_p - entry_p
+    if risk > 0
+        trade_entry := entry_p
+        trade_sl_v  := sl_p
+        trade_tp1   := entry_p - risk * rr1
+        trade_tp2   := entry_p - risk * rr2
+        tp1_hit     := false
+        strategy.entry("Short", strategy.short)
+
+// TP1 хагас гаралт + breakeven
+if strategy.position_size > 0
+    if not tp1_hit and high >= trade_tp1
+        tp1_hit := true
+    float eff_sl = tp1_hit and be_after_tp1 ? trade_entry : trade_sl_v
+    strategy.exit("L-TP1", "Long", qty_percent=tp1_pct, limit=trade_tp1, stop=trade_sl_v)
+    strategy.exit("L-TP2", "Long", limit=trade_tp2, stop=eff_sl)
+
+if strategy.position_size < 0
+    if not tp1_hit and low <= trade_tp1
+        tp1_hit := true
+    float eff_sl = tp1_hit and be_after_tp1 ? trade_entry : trade_sl_v
+    strategy.exit("S-TP1", "Short", qty_percent=tp1_pct, limit=trade_tp1, stop=trade_sl_v)
+    strategy.exit("S-TP2", "Short", limit=trade_tp2, stop=eff_sl)
+
+// ─── Visual signals ───
+plotshape(long_entry,  "LONG",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\nv8", size=size.normal)
+plotshape(short_entry, "SHORT", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\nv8", size=size.normal)
+
+plot(idm_bull_price, "Bull IDM", color=color.new(color.rgb(38,200,120), 55), style=plot.style_linebr, linewidth=1)
+plot(idm_bear_price, "Bear IDM", color=color.new(color.rgb(240,80,60),  55), style=plot.style_linebr, linewidth=1)
+
+// SL/TP шугам (нээлттэй позиц дээр)
+plot(strategy.position_size != 0 ? trade_sl_v : na, "SL",  color=color.new(color.red, 40),   style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 ? trade_tp1 : na,  "TP1", color=color.new(color.green, 40), style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 ? trade_tp2 : na,  "TP2", color=color.new(color.green, 60), style=plot.style_linebr, linewidth=1)
