@@ -1,0 +1,273 @@
+//@version=6
+indicator("Liquidity + Accumulation Zones v1", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=150)
+
+// ═══════════════════════════════════════════════════════════════════
+//  LIQUIDITY + ACCUMULATION ZONES v1
+//
+//  ① LIQUIDITY ZONES — stop loss хуримтлагдсан түвшнүүд:
+//     · Хүрээгүй (unswept) swing high = үнийн ДЭЭР liquidity ↑
+//       (шорт хийгчдийн SL + breakout buyer-ийн orders)
+//     · Хүрээгүй swing low = үнийн ДООР liquidity ↓
+//     · Equal highs/lows (олон pivot ойролцоо) = ХҮЧТЭЙ liquidity
+//     · Тасархай шугам + шар label, sweep хийгдмэгц устана
+//
+//  ② ACCUMULATION ZONES — нам гүм хуримтлалын бүс:
+//     · N bar-ийн далайц агшсан (range < ATR×) үе
+//     · Институци позиц цуглуулж буй бүс — дараа нь
+//       ихэвчлэн хүчтэй чиглэлтэй хөдөлгөөн гардаг
+//     · Цэнхэр (teal) box-оор будна
+//
+//  + Sweep alert: liquidity түвшин цэвэрлэгдэхэд мэдэгдэнэ
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_LIQ = "① Liquidity Zones"
+string G_ACC = "② Accumulation Zones"
+string G_VIS = "③ Visual"
+
+// ─── Liquidity ───
+int   liq_piv    = input.int(8,    "Swing pivot length", minval=3, maxval=20, group=G_LIQ)
+int   liq_max    = input.int(8,    "Нэг талд max шугам", minval=2, maxval=15, group=G_LIQ)
+float eq_tol     = input.float(0.5,"Equal H/L tolerance (ATR×)", minval=0.1, step=0.1, group=G_LIQ,
+     tooltip="Хоёр pivot энэ зайд ойрхон бол нэг ХҮЧТЭЙ liquidity болгож нэгтгэнэ")
+int   liq_expire = input.int(500,  "Шугам max нас (bars)", minval=100, maxval=2000, group=G_LIQ)
+bool  keep_swept = input.bool(false, "Sweep хийгдсэнийг харуулах", group=G_LIQ,
+     tooltip="Асаавал цэвэрлэгдсэн түвшин саарал болж үлдэнэ, унтраавал устана")
+
+// ─── Accumulation ───
+int   acc_len   = input.int(12,   "Хуримтлалын min урт (bars)", minval=5, maxval=50, group=G_ACC)
+float acc_mult  = input.float(1.5,"Далайцын max (ATR×)", minval=0.5, step=0.1, group=G_ACC,
+     tooltip="N bar-ийн нийт далайц ATR×энэ хэмжээнээс БАГА бол accumulation гэж үзнэ")
+int   acc_max   = input.int(10,   "Max бүсийн тоо", minval=3, maxval=20, group=G_ACC)
+
+// ─── Visual ───
+color col_liq_up = input.color(color.new(color.rgb(255, 200, 40), 0),  "Liquidity ↑ өнгө", group=G_VIS)
+color col_liq_dn = input.color(color.new(color.rgb(255, 160, 20), 0),  "Liquidity ↓ өнгө", group=G_VIS)
+color col_acc    = input.color(color.new(color.rgb(60, 190, 180), 82), "Accumulation өнгө", group=G_VIS)
+int   ext_bars   = input.int(15, "Шугам баруун тийш сунгах (bars)", minval=5, maxval=50, group=G_VIS)
+bool  show_dash  = input.bool(true, "Dashboard", group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+float atr_v = ta.atr(14)
+
+// ═══════════════════════════════════════════════════════════════════
+// ① LIQUIDITY ZONES
+// ═══════════════════════════════════════════════════════════════════
+
+float ph = ta.pivothigh(high, liq_piv, liq_piv)
+float pl = ta.pivotlow(low,   liq_piv, liq_piv)
+
+// Дээд liquidity (unswept swing highs)
+var array<float> up_lvl   = array.new<float>()
+var array<int>   up_bar   = array.new<int>()
+var array<int>   up_cnt   = array.new<int>()    // хэдэн pivot нэгтгэсэн (equal highs)
+var array<line>  up_ln    = array.new<line>()
+var array<label> up_lb    = array.new<label>()
+
+// Доод liquidity (unswept swing lows)
+var array<float> dn_lvl   = array.new<float>()
+var array<int>   dn_bar   = array.new<int>()
+var array<int>   dn_cnt   = array.new<int>()
+var array<line>  dn_ln    = array.new<line>()
+var array<label> dn_lb    = array.new<label>()
+
+f_remove_up(int i) =>
+    line.delete(array.get(up_ln, i))
+    label.delete(array.get(up_lb, i))
+    array.remove(up_lvl, i)
+    array.remove(up_bar, i)
+    array.remove(up_cnt, i)
+    array.remove(up_ln, i)
+    array.remove(up_lb, i)
+
+f_remove_dn(int i) =>
+    line.delete(array.get(dn_ln, i))
+    label.delete(array.get(dn_lb, i))
+    array.remove(dn_lvl, i)
+    array.remove(dn_bar, i)
+    array.remove(dn_cnt, i)
+    array.remove(dn_ln, i)
+    array.remove(dn_lb, i)
+
+// ─── Шинэ pivot high → liquidity нэмэх / нэгтгэх ───
+if not na(ph)
+    int pb = bar_index - liq_piv
+    // Ойролцоо түвшинтэй нэгтгэх (equal highs)
+    bool merged = false
+    if array.size(up_lvl) > 0
+        for i = 0 to array.size(up_lvl) - 1
+            if not merged and math.abs(ph - array.get(up_lvl, i)) <= eq_tol * atr_v
+                // Нэгтгэх: өндөр талыг нь авна, тоог нэмнэ
+                array.set(up_lvl, i, math.max(ph, array.get(up_lvl, i)))
+                array.set(up_cnt, i, array.get(up_cnt, i) + 1)
+                merged := true
+    if not merged
+        array.push(up_lvl, ph)
+        array.push(up_bar, pb)
+        array.push(up_cnt, 1)
+        array.push(up_ln, line.new(pb, ph, bar_index + ext_bars, ph, color=color.new(col_liq_up, 30), width=1, style=line.style_dashed))
+        array.push(up_lb, label.new(bar_index + ext_bars, ph, "", color=color.new(col_liq_up, 15), textcolor=color.black, style=label.style_label_left, size=size.small))
+    // Хэт олон бол хамгийн хуучныг устгах
+    if array.size(up_lvl) > liq_max
+        f_remove_up(0)
+
+// ─── Шинэ pivot low ───
+if not na(pl)
+    int pb = bar_index - liq_piv
+    bool merged = false
+    if array.size(dn_lvl) > 0
+        for i = 0 to array.size(dn_lvl) - 1
+            if not merged and math.abs(pl - array.get(dn_lvl, i)) <= eq_tol * atr_v
+                array.set(dn_lvl, i, math.min(pl, array.get(dn_lvl, i)))
+                array.set(dn_cnt, i, array.get(dn_cnt, i) + 1)
+                merged := true
+    if not merged
+        array.push(dn_lvl, pl)
+        array.push(dn_bar, pb)
+        array.push(dn_cnt, 1)
+        array.push(dn_ln, line.new(pb, pl, bar_index + ext_bars, pl, color=color.new(col_liq_dn, 30), width=1, style=line.style_dashed))
+        array.push(dn_lb, label.new(bar_index + ext_bars, pl, "", color=color.new(col_liq_dn, 15), textcolor=color.black, style=label.style_label_left, size=size.small))
+    if array.size(dn_lvl) > liq_max
+        f_remove_dn(0)
+
+// ─── Sweep шалгах + шугам шинэчлэх ───
+bool sweep_up_now = false
+bool sweep_dn_now = false
+
+if array.size(up_lvl) > 0
+    for i = array.size(up_lvl) - 1 to 0
+        float lvl = array.get(up_lvl, i)
+        int   ib  = array.get(up_bar, i)
+        int   cnt = array.get(up_cnt, i)
+        bool  swept   = high > lvl
+        bool  expired = bar_index - ib > liq_expire
+        if swept
+            sweep_up_now := true
+        if (swept and not keep_swept) or expired
+            f_remove_up(i)
+        else
+            line  ln = array.get(up_ln, i)
+            label lb = array.get(up_lb, i)
+            line.set_x2(ln, bar_index + ext_bars)
+            label.set_x(lb, bar_index + ext_bars)
+            string strength = cnt >= 3 ? " 🔥🔥" : cnt == 2 ? " 🔥" : ""
+            label.set_text(lb, "⚠ Liquidity ↑" + strength)
+            if swept and keep_swept
+                line.set_color(ln, color.new(color.gray, 60))
+                label.set_text(lb, "✓ swept ↑")
+                label.set_color(lb, color.new(color.gray, 60))
+                label.set_textcolor(lb, color.white)
+
+if array.size(dn_lvl) > 0
+    for i = array.size(dn_lvl) - 1 to 0
+        float lvl = array.get(dn_lvl, i)
+        int   ib  = array.get(dn_bar, i)
+        int   cnt = array.get(dn_cnt, i)
+        bool  swept   = low < lvl
+        bool  expired = bar_index - ib > liq_expire
+        if swept
+            sweep_dn_now := true
+        if (swept and not keep_swept) or expired
+            f_remove_dn(i)
+        else
+            line  ln = array.get(dn_ln, i)
+            label lb = array.get(dn_lb, i)
+            line.set_x2(ln, bar_index + ext_bars)
+            label.set_x(lb, bar_index + ext_bars)
+            string strength = cnt >= 3 ? " 🔥🔥" : cnt == 2 ? " 🔥" : ""
+            label.set_text(lb, "⚠ Liquidity ↓" + strength)
+            if swept and keep_swept
+                line.set_color(ln, color.new(color.gray, 60))
+                label.set_text(lb, "✓ swept ↓")
+                label.set_color(lb, color.new(color.gray, 60))
+                label.set_textcolor(lb, color.white)
+
+// ═══════════════════════════════════════════════════════════════════
+// ② ACCUMULATION ZONES
+// ═══════════════════════════════════════════════════════════════════
+
+// N bar-ийн далайц агшсан эсэх
+float win_hi = ta.highest(high, acc_len)
+float win_lo = ta.lowest(low,   acc_len)
+bool  is_tight = (win_hi - win_lo) <= acc_mult * atr_v
+
+var array<box> acc_boxes = array.new<box>()
+var bool  in_acc     = false
+var int   acc_start  = na
+var float acc_hi     = na
+var float acc_lo     = na
+var box   acc_cur    = na
+
+// Хуримтлал эхлэх
+if is_tight and not in_acc
+    in_acc    := true
+    acc_start := bar_index - acc_len + 1
+    acc_hi    := win_hi
+    acc_lo    := win_lo
+    acc_cur   := box.new(acc_start, acc_hi, bar_index, acc_lo, border_color=color.new(color.rgb(60,190,180), 55), bgcolor=col_acc, text="Accumulation", text_color=color.new(color.rgb(60,190,180), 10), text_size=size.small, text_halign=text.align_center)
+    array.push(acc_boxes, acc_cur)
+    if array.size(acc_boxes) > acc_max
+        box.delete(array.get(acc_boxes, 0))
+        array.remove(acc_boxes, 0)
+
+// Хуримтлал үргэлжлэх — бүсийг сунгана
+if in_acc
+    if is_tight
+        acc_hi := math.max(acc_hi, high)
+        acc_lo := math.min(acc_lo, low)
+        box.set_right(acc_cur, bar_index)
+        box.set_top(acc_cur, acc_hi)
+        box.set_bottom(acc_cur, acc_lo)
+    else
+        // Үнэ бүсээс гарлаа — хуримтлал дууссан
+        in_acc := false
+
+// Breakout чиглэл tэмдэглэх
+bool acc_break_up = in_acc[1] and not in_acc and close > acc_hi
+bool acc_break_dn = in_acc[1] and not in_acc and close < acc_lo
+
+plotshape(acc_break_up, "Acc Break ↑", shape.triangleup,   location.belowbar, color.new(color.rgb(60,190,180), 20), size=size.small)
+plotshape(acc_break_dn, "Acc Break ↓", shape.triangledown, location.abovebar, color.new(color.rgb(255,140,60), 20), size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════
+
+var table dash = table.new(position.top_right, 2, 5, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    // Хамгийн ойрын liquidity
+    float near_up = na
+    float near_dn = na
+    if array.size(up_lvl) > 0
+        for i = 0 to array.size(up_lvl) - 1
+            float l = array.get(up_lvl, i)
+            if l > close and (na(near_up) or l < near_up)
+                near_up := l
+    if array.size(dn_lvl) > 0
+        for i = 0 to array.size(dn_lvl) - 1
+            float l = array.get(dn_lvl, i)
+            if l < close and (na(near_dn) or l > near_dn)
+                near_dn := l
+    string up_txt = not na(near_up) ? str.tostring(near_up, format.mintick) + "  (+" + str.tostring((near_up - close) / atr_v, "#.#") + " ATR)" : "—"
+    string dn_txt = not na(near_dn) ? str.tostring(near_dn, format.mintick) + "  (−" + str.tostring((close - near_dn) / atr_v, "#.#") + " ATR)" : "—"
+    string ac_txt = in_acc ? "🔄 Хуримтлал явагдаж байна" : "○ Идэвхгүй"
+    table.cell(dash, 0, 0, " Liq + Acc Zones", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Liquidity ↑",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, up_txt,          bgcolor=color.rgb(14,17,28), text_color=col_liq_up, text_size=size.small)
+    table.cell(dash, 0, 2, " Liquidity ↓",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, dn_txt,          bgcolor=color.rgb(10,10,18), text_color=col_liq_dn, text_size=size.small)
+    table.cell(dash, 0, 3, " Accumulation", bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, ac_txt,          bgcolor=color.rgb(14,17,28), text_color=color.rgb(60,190,180), text_size=size.small)
+    table.cell(dash, 0, 4, " Шугамын тоо",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, "↑" + str.tostring(array.size(up_lvl)) + "  ↓" + str.tostring(array.size(dn_lvl)), bgcolor=color.rgb(10,10,18), text_color=color.rgb(160,175,220), text_size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════
+
+alertcondition(sweep_up_now, "Liquidity ↑ swept", "Дээд liquidity цэвэрлэгдлээ — {{ticker}} @ {{close}} (SELL reversal ажиглах)")
+alertcondition(sweep_dn_now, "Liquidity ↓ swept", "Доод liquidity цэвэрлэгдлээ — {{ticker}} @ {{close}} (BUY reversal ажиглах)")
+alertcondition(in_acc and not in_acc[1], "Accumulation эхэллээ", "Хуримтлалын бүс үүсч байна — {{ticker}}")
+alertcondition(acc_break_up, "Acc Breakout ↑", "Хуримтлалаас ДЭЭШЭЭ гарлаа — {{ticker}} @ {{close}}")
+alertcondition(acc_break_dn, "Acc Breakout ↓", "Хуримтлалаас ДООШОО гарлаа — {{ticker}} @ {{close}}")
