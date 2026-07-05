@@ -1,0 +1,316 @@
+//@version=6
+indicator("Order Block Entry v1 — BOS+OB+Harami", overlay=true, max_boxes_count=150, max_lines_count=100, max_labels_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+//  ORDER BLOCK ENTRY v1
+//
+//  Зурган дээрх загвар:
+//
+//   ┌─────── Break of Structure ──────┐
+//   │                        ▲▲       │
+//   │   /\  /\    /\        /  \      │
+//   │  /  \/  \/\/  \      /    \     ← BOS дээшээ
+//   │ /              \    /
+//   │                 \  /  ← OB retest
+//   │ ████████████████ \/ ○ Bullish Harami
+//   │ █ ORDER BLOCK  █ ← энд BUY
+//   │ ████████████████ ← SL доор нь (pink)
+//
+//  Алхам:
+//   ① BOS — үнэ swing high-г эвдэнэ (бүтэц өөрчлөгдсөн)
+//   ② OB тодорхойлох — BOS үүсгэсэн impulse-ийн ӨМНӨХ эсрэг лаа
+//   ③ RETEST — үнэ OB бүс рүү буцаж ирэх
+//   ④ CONFIRMATION — Bullish Harami эсвэл reversal лаа
+//   ⑤ ENTRY — SL = OB доод + buffer, TP = R:R
+//
+//  Bearish = толин тусгал (BOS доошоо → bearish OB → SELL)
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_BOS = "① BOS / Order Block"
+string G_ENT = "② Retest / Confirmation"
+string G_RSK = "③ Risk"
+string G_VIS = "④ Visual"
+
+// ─── BOS / OB ───
+int  swing_len = input.int(5,  "Swing Length (BOS)", minval=2, maxval=15, group=G_BOS)
+int  ob_search = input.int(15, "OB хайх гүн (bars)", minval=3, maxval=30, group=G_BOS,
+     tooltip="BOS-оос хойш хэдэн bar ухарч OB лааг хайх")
+int  ob_expire = input.int(100, "OB хүчинтэй хугацаа (bars)", minval=20, maxval=300, group=G_BOS)
+bool do_buy    = input.bool(true, "BUY (bullish OB)",  group=G_BOS)
+bool do_sell   = input.bool(true, "SELL (bearish OB)", group=G_BOS)
+
+// ─── Confirmation ───
+string conf_mode = input.string("Harami + Reversal", "Баталгааны төрөл",
+     options=["Harami + Reversal", "Зөвхөн Harami", "Зөвхөн Reversal", "Байхгүй"], group=G_ENT,
+     tooltip="Harami: жижиг эсрэг лаа өмнөх лааны дотор. Reversal: биет ≥35% зөв чиглэлийн лаа")
+float rev_body = input.float(0.35, "Reversal биет min", minval=0.2, maxval=0.8, step=0.05, group=G_ENT)
+bool  use_htf  = input.bool(false, "HTF EMA шүүлтүүр", group=G_ENT)
+string htf_tf  = input.timeframe("60", "HTF Timeframe", group=G_ENT)
+int   htf_len  = input.int(50, "HTF EMA Length", minval=1, group=G_ENT)
+
+// ─── Risk ───
+int   atr_len = input.int(14,    "ATR Length", minval=1, group=G_RSK)
+float sl_buf  = input.float(0.3, "SL buffer OB-ээс (ATR×)", minval=0.0, step=0.1, group=G_RSK)
+float rr1     = input.float(1.0, "TP1 R:R", minval=0.5, step=0.1, group=G_RSK)
+float rr2     = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RSK)
+
+// ─── Visual ───
+color col_bull = input.color(color.rgb(38, 200, 120), "Bull", group=G_VIS)
+color col_bear = input.color(color.rgb(240, 80, 60),  "Bear", group=G_VIS)
+color col_ob   = input.color(color.new(color.gray, 60), "OB бүс", group=G_VIS)
+bool  show_dash = input.bool(true, "Dashboard", group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+float atr_v   = ta.atr(atr_len)
+float htf_ema = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_len), lookahead=barmerge.lookahead_off)
+bool  f_htf_l = not use_htf or close > htf_ema
+bool  f_htf_s = not use_htf or close < htf_ema
+
+// ─── Swing / BOS ───
+float sh = ta.pivothigh(high, swing_len, swing_len)
+float sl_piv = ta.pivotlow(low, swing_len, swing_len)
+
+var float last_sh = na
+var float last_sl = na
+if not na(sh)
+    last_sh := sh
+if not na(sl_piv)
+    last_sl := sl_piv
+
+bool bos_up   = not na(last_sh) and close > last_sh and close[1] <= last_sh
+bool bos_down = not na(last_sl) and close < last_sl and close[1] >= last_sl
+
+// ─── OB Detection: BOS үүсгэсэн impulse-ийн өмнөх эсрэг лаа ───
+// Bullish OB: BOS дээшээ үед — сүүлийн БУУРАХ лаа (доош ухаж хайна)
+// Bearish OB: BOS доошоо үед — сүүлийн ӨСӨХ лаа
+f_find_last_bear() =>
+    float t = na
+    float b = na
+    int   bi = na
+    for j = 1 to ob_search
+        if close[j] < open[j]
+            t := high[j]
+            b := low[j]
+            bi := bar_index - j
+            break
+    [t, b, bi]
+
+f_find_last_bull() =>
+    float t = na
+    float b = na
+    int   bi = na
+    for j = 1 to ob_search
+        if close[j] > open[j]
+            t := high[j]
+            b := low[j]
+            bi := bar_index - j
+            break
+    [t, b, bi]
+
+// ─── Идэвхтэй OB-ууд (нэг bull + нэг bear) ───
+var float bull_ob_top = na
+var float bull_ob_bot = na
+var int   bull_ob_bar = na
+var bool  bull_ob_used = false
+var box   bull_ob_box = na
+
+var float bear_ob_top = na
+var float bear_ob_bot = na
+var int   bear_ob_bar = na
+var bool  bear_ob_used = false
+var box   bear_ob_box = na
+
+// BOS дээшээ → bullish OB бүртгэх
+if bos_up and do_buy
+    [t, b, bi] = f_find_last_bear()
+    if not na(t)
+        bull_ob_top  := t
+        bull_ob_bot  := b
+        bull_ob_bar  := bi
+        bull_ob_used := false
+        box.delete(bull_ob_box)
+        bull_ob_box := box.new(bi, t, bar_index + ob_expire, b, border_color=color.new(col_bull, 50), bgcolor=color.new(color.gray, 75), text="Order Block", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_center)
+        label.new(bar_index, high, "BOS ▲", color=color.new(col_bull, 40), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// BOS доошоо → bearish OB бүртгэх
+if bos_down and do_sell
+    [t, b, bi] = f_find_last_bull()
+    if not na(t)
+        bear_ob_top  := t
+        bear_ob_bot  := b
+        bear_ob_bar  := bi
+        bear_ob_used := false
+        box.delete(bear_ob_box)
+        bear_ob_box := box.new(bi, t, bar_index + ob_expire, b, border_color=color.new(col_bear, 50), bgcolor=color.new(color.gray, 75), text="OB", text_color=color.new(color.white, 30), text_size=size.small, text_halign=text.align_center)
+        label.new(bar_index, low, "BOS ▼", color=color.new(col_bear, 40), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// OB хүчингүй болгох: expire эсвэл нэвт эвдэрсэн
+if not na(bull_ob_bar) and (bar_index - bull_ob_bar > ob_expire or close < bull_ob_bot - atr_v * 0.5)
+    bull_ob_top := na
+    bull_ob_bot := na
+    bull_ob_bar := na
+    box.delete(bull_ob_box)
+if not na(bear_ob_bar) and (bar_index - bear_ob_bar > ob_expire or close > bear_ob_top + atr_v * 0.5)
+    bear_ob_top := na
+    bear_ob_bot := na
+    bear_ob_bar := na
+    box.delete(bear_ob_box)
+
+// ─── Confirmation candles ───
+float rng  = high - low
+float body = math.abs(close - open)
+
+// Bullish Harami: өмнөх лаа буурах + одоогийн ӨСӨХ жижиг лаа өмнөхийн биет дотор
+bool harami_bull = close[1] < open[1] and close > open and
+     open >= close[1] and close <= open[1] and
+     body < math.abs(close[1] - open[1])
+// Bearish Harami
+bool harami_bear = close[1] > open[1] and close < open and
+     open <= close[1] and close >= open[1] and
+     body < math.abs(close[1] - open[1])
+
+bool rev_bull = close > open and rng > 0 and body / rng >= rev_body
+bool rev_bear = close < open and rng > 0 and body / rng >= rev_body
+
+bool conf_bull = conf_mode == "Байхгүй" ? true :
+     conf_mode == "Зөвхөн Harami"   ? harami_bull :
+     conf_mode == "Зөвхөн Reversal" ? rev_bull :
+     harami_bull or rev_bull
+bool conf_bear = conf_mode == "Байхгүй" ? true :
+     conf_mode == "Зөвхөн Harami"   ? harami_bear :
+     conf_mode == "Зөвхөн Reversal" ? rev_bear :
+     harami_bear or rev_bear
+
+// ─── ENTRY: OB retest + confirmation ───
+bool  buy_sig  = false
+bool  sell_sig = false
+float entry_p  = na
+float sl_p     = na
+
+// BUY: үнэ bullish OB бүсэд хүрч + баталгаа + close OB-ийн доод талаас дээр
+if not na(bull_ob_top) and not bull_ob_used and barstate.isconfirmed
+    bool in_zone = low <= bull_ob_top and high >= bull_ob_bot
+    if in_zone and conf_bull and close > bull_ob_bot and f_htf_l
+        buy_sig      := true
+        entry_p      := close
+        sl_p         := bull_ob_bot - sl_buf * atr_v
+        bull_ob_used := true
+
+// SELL: үнэ bearish OB бүсэд хүрч + баталгаа
+if not na(bear_ob_top) and not bear_ob_used and barstate.isconfirmed and not buy_sig
+    bool in_zone = high >= bear_ob_bot and low <= bear_ob_top
+    if in_zone and conf_bear and close < bear_ob_top and f_htf_s
+        sell_sig     := true
+        entry_p      := close
+        sl_p         := bear_ob_top + sl_buf * atr_v
+        bear_ob_used := true
+
+// ─── TP + бүс (зурган шиг teal/pink) ───
+float risk_v = buy_sig ? entry_p - sl_p : sell_sig ? sl_p - entry_p : na
+float tp1_v  = buy_sig ? entry_p + risk_v * rr1 : sell_sig ? entry_p - risk_v * rr1 : na
+float tp2_v  = buy_sig ? entry_p + risk_v * rr2 : sell_sig ? entry_p - risk_v * rr2 : na
+
+var box   sl_bx = na
+var box   tp_bx = na
+var label e_lb  = na
+var label s_lb  = na
+var label t_lb  = na
+
+if (buy_sig or sell_sig) and risk_v > 0
+    box.delete(sl_bx)
+    box.delete(tp_bx)
+    label.delete(e_lb)
+    label.delete(s_lb)
+    label.delete(t_lb)
+    int r = bar_index + 30
+    // SL бүс = pink, TP бүс = teal (зурган шиг)
+    sl_bx := box.new(bar_index, math.max(entry_p, sl_p), r, math.min(entry_p, sl_p), border_color=color.new(color.rgb(255,100,150), 60), bgcolor=color.new(color.rgb(255,100,150), 70))
+    tp_bx := box.new(bar_index, math.max(entry_p, tp2_v), r, math.min(entry_p, tp2_v), border_color=color.new(color.rgb(80,210,200), 60), bgcolor=color.new(color.rgb(80,210,200), 75))
+    e_lb := label.new(r, entry_p, "Entry " + str.tostring(entry_p, format.mintick), color=color.new(color.gray, 60), textcolor=color.white, style=label.style_label_left, size=size.small)
+    s_lb := label.new(r, sl_p,    "SL "    + str.tostring(sl_p,    format.mintick), color=color.new(color.rgb(255,100,150), 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+    t_lb := label.new(r, tp2_v,   "TP2 "   + str.tostring(tp2_v,   format.mintick), color=color.new(color.rgb(80,210,200), 55),  textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// ─── Signal labels ───
+plotshape(buy_sig,  "OB BUY",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\nOB", size=size.normal)
+plotshape(sell_sig, "OB SELL", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\nOB", size=size.normal)
+
+// Harami тэмдэглэгээ
+plotshape(harami_bull and not na(bull_ob_top) and low <= bull_ob_top, "Harami", shape.circle, location.belowbar, color.new(col_bull, 40), size=size.tiny)
+plotshape(harami_bear and not na(bear_ob_top) and high >= bear_ob_bot, "Harami", shape.circle, location.abovebar, color.new(col_bear, 40), size=size.tiny)
+
+// ─── Winrate Tracking (TP1 = WIN + breakeven) ───
+var int   trade_dir = 0
+var float trade_sl  = na
+var float trade_tp1 = na
+var float trade_tp2 = na
+var int   wins      = 0
+var int   losses    = 0
+var int   tp2_hits  = 0
+var bool  tp1_done  = false
+
+if buy_sig and risk_v > 0
+    trade_dir := 1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+if sell_sig and risk_v > 0
+    trade_dir := -1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_v
+    trade_tp2 := tp2_v
+    tp1_done  := false
+
+if trade_dir == 1 and not (buy_sig or sell_sig)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == -1 and not (buy_sig or sell_sig)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 6, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string ob_b = not na(bull_ob_top) ? str.tostring(bull_ob_bot, format.mintick) + "–" + str.tostring(bull_ob_top, format.mintick) + (bull_ob_used ? " (ашигласан)" : " ✅") : "—"
+    string ob_s = not na(bear_ob_top) ? str.tostring(bear_ob_bot, format.mintick) + "–" + str.tostring(bear_ob_top, format.mintick) + (bear_ob_used ? " (ашигласан)" : " ✅") : "—"
+    string pos_txt = trade_dir == 1 ? "📈 LONG нээлттэй" : trade_dir == -1 ? "📉 SHORT нээлттэй" : "○ OB retest хүлээж"
+    string wr_txt = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col = na(winrate) ? color.gray : winrate >= 60 ? col_bull : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    table.cell(dash, 0, 0, " OB Entry 🧱", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Төлөв",    bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, pos_txt,     bgcolor=color.rgb(14,17,28), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 2, " Bull OB",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, ob_b,        bgcolor=color.rgb(10,10,18), text_color=col_bull, text_size=size.small)
+    table.cell(dash, 0, 3, " Bear OB",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, ob_s,        bgcolor=color.rgb(14,17,28), text_color=col_bear, text_size=size.small)
+    table.cell(dash, 0, 4, " Winrate",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, wr_txt,      bgcolor=color.rgb(10,10,18), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 5, " Арилжаа",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits), bgcolor=color.rgb(14,17,28), text_color=color.rgb(100,200,255), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(buy_sig,  "OB BUY",  "Order Block BUY — {{ticker}} @ {{close}}")
+alertcondition(sell_sig, "OB SELL", "Order Block SELL — {{ticker}} @ {{close}}")
+alertcondition(bos_up or bos_down, "BOS", "Break of Structure — {{ticker}}, OB бүртгэгдлээ")
