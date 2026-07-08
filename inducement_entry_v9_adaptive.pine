@@ -1,0 +1,509 @@
+//@version=6
+indicator("Inducement Entry Pro v9 — Adaptive", overlay=true, max_lines_count=300, max_labels_count=300, max_boxes_count=200)
+
+// ═══════════════════════════════════════════════════════════════════
+//  Inducement Entry Pro v9 — ADAPTIVE хувилбар
+//
+//  v8-аас сигналын тоог нэмж, чанарыг хадгалах 6 сайжруулалт:
+//   ① 2-bar sweep — sweep лаа доор хаагдаад дараагийн лаагаар
+//      буцаж хаагдвал мөн хүчинтэй (v8 зөвхөн 1 лаанд шаарддаг байсан)
+//   ② Confluence давхардал арилгасан — HTF тал ба sweep гүн нь
+//      заавал нөхцөл тул оноонд орохгүй; 5 БИЕ ДААСАН хүчин зүйл:
+//      ADX / Volume / EMA50 тал / Sweep лааны rejection wick / HTF momentum
+//   ③ Fallback POI — OB/FVG олдохгүй үед sweep зонa (wick↔IDM түвшин)
+//      өөрөө POI болно → "POI олдсонгүй" гэж алдагдах setup багасна
+//   ④ Adaptive reversal — оноо ≥4 үед reversal биетийн шаардлага 40%
+//      зөөлөрнө (өндөр чанартай setup-д илүүц хатуу шаардлага тавихгүй)
+//   ⑤ Setup refresh — шинэ sweep ирвэл хуучирсан setup-ыг шинэчилнэ
+//   ⑥ Default тохиргоо: Swing 4/4 (туршилтаар өндөр WR өгсөн),
+//      POI хүлээх 40 бар, min score 3
+//
+//  Dashboard: Winrate, W/L, TP2, сүүлийн сигналаас хойшх бар
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_CORE  = "① IDM Core"
+string G_POI   = "② POI Entry"
+string G_QLT   = "③ Чанарын шүүлтүүр (winrate)"
+string G_RISK  = "④ Risk"
+string G_FLT   = "⑤ Ерөнхий шүүлтүүр"
+string G_VIS   = "⑥ Visual"
+
+// ─── Core Inputs ───
+int   swing_len   = input.int(4,  "Major Swing Length", minval=2,  group=G_CORE)
+int   idm_len     = input.int(4,  "IDM Swing Length",   minval=1,  group=G_CORE)
+int   idm_expire  = input.int(60, "IDM Expire (bars)",  minval=10, group=G_CORE)
+bool  sweep_2bar  = input.bool(true, "2-bar sweep зөвшөөрөх", group=G_CORE,
+     tooltip="Sweep лаа IDM доор хаагдаад ДАРААГИЙН лаа буцаж дээр хаавал мөн хүчинтэй sweep гэж тооцно")
+
+// ─── POI Inputs ───
+bool  use_ob   = input.bool(true, "OB POI ашиглах",  group=G_POI)
+bool  use_fvg  = input.bool(true, "FVG POI ашиглах", group=G_POI)
+bool  use_fb   = input.bool(true, "Fallback POI (sweep зона)", group=G_POI,
+     tooltip="OB/FVG олдохгүй үед sweep-ийн wick ↔ IDM түвшин хоорондох зонг POI болгоно")
+int   poi_wait = input.int(40,    "POI Retest хүлээх (bars)", minval=3, maxval=150, group=G_POI)
+
+// ─── Quality Filters ───
+float min_sweep_atr = input.float(0.25, "Min Sweep гүн (ATR×)",  minval=0.0, step=0.05, group=G_QLT,
+     tooltip="Sweep-ийн wick нь IDM түвшнээс хамгийн багадаа ATR×энэ хэмжээгээр нэвтэрсэн байх. 0 = унтраах")
+bool  use_rev_candle = input.bool(true, "Reversal candle баталгаа", group=G_QLT,
+     tooltip="POI retest дээр эргэлтийн лаа шаардана. Оноо ≥4 үед шаардлага автоматаар 40% зөөлөрнө")
+float rev_body_min   = input.float(0.35, "Reversal биет/далайц min", minval=0.1, maxval=0.9, step=0.05, group=G_QLT)
+bool  use_rsi        = input.bool(true,  "RSI extreme шүүлтүүр", group=G_QLT,
+     tooltip="RSI > 70 үед BUY хориглоно, RSI < 30 үед SELL хориглоно")
+int   rsi_len        = input.int(14, "RSI Length", minval=2, group=G_QLT)
+int   min_score      = input.int(3,  "Min Confluence оноо (5-аас)", minval=1, maxval=5, group=G_QLT,
+     tooltip="1:ADX>20 2:Volume өсөлт 3:EMA50 талд 4:Sweep лааны rejection wick 5:HTF EMA momentum — бүгд бие даасан (HTF тал ба sweep гүн заавал нөхцөл тул энд ДАВХАРДАХГҮЙ)")
+
+// ─── Risk ───
+bool  use_atr_sl = input.bool(true, "ATR-Adaptive SL", group=G_RISK)
+float atr_mult   = input.float(1.0, "ATR SL Mult", minval=0.1, step=0.1, group=G_RISK)
+int   atr_len    = input.int(14,    "ATR Length",  minval=1, group=G_RISK)
+float rr1        = input.float(1.0, "TP1 R:R (богино = өндөр winrate)", minval=0.5, step=0.1, group=G_RISK)
+float rr2        = input.float(2.0, "TP2 R:R", minval=1.0, step=0.5, group=G_RISK)
+
+// ─── General Filters ───
+bool   use_htf   = input.bool(true,      "HTF EMA Filter", group=G_FLT)
+string htf_tf    = input.timeframe("60", "HTF Timeframe",  group=G_FLT)
+int    htf_ema_l = input.int(50,         "HTF EMA Length", minval=1, group=G_FLT)
+bool   use_kz    = input.bool(false,     "Killzone цагийн шүүлтүүр (UTC)", group=G_FLT,
+     tooltip="London 07-11, NY 12-16 UTC. Зөвхөн эдгээр цагт сигнал өгнө")
+bool   use_sess  = input.bool(false,     "Custom Session Filter", group=G_FLT)
+string sess      = input.session("0800-1700", "Session", group=G_FLT)
+
+// ─── Visual ───
+color col_bull  = input.color(color.rgb(38, 200, 120), "Bull", group=G_VIS)
+color col_bear  = input.color(color.rgb(240, 80, 60),  "Bear", group=G_VIS)
+color col_poi   = input.color(color.new(color.rgb(255, 190, 0), 75), "POI Zone", group=G_VIS)
+bool  show_idm  = input.bool(true, "IDM тэмдэглэгээ",   group=G_VIS)
+bool  show_poi  = input.bool(true, "POI зона харуулах", group=G_VIS)
+bool  show_dash = input.bool(true, "Dashboard",         group=G_VIS)
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Indicators ───
+float atr_v    = ta.atr(atr_len)
+float rsi_v    = ta.rsi(close, rsi_len)
+float ema50    = ta.ema(close, 50)
+float vol_sma  = ta.sma(volume, 20)
+[di_p, di_m, adx_v] = ta.dmi(14, 14)
+float htf_ema  = request.security(syminfo.tickerid, htf_tf, ta.ema(close, htf_ema_l), lookahead=barmerge.lookahead_off)
+
+// ─── Session / Killzone ───
+int h_utc = hour(time, "UTC")
+bool in_kz   = not use_kz or ((h_utc >= 7 and h_utc < 11) or (h_utc >= 12 and h_utc < 16))
+bool in_sess = not use_sess or not na(time(timeframe.period, sess))
+bool f_time  = in_kz and in_sess
+
+// ─── HTF filter ───
+bool f_htf_l = not use_htf or close > htf_ema
+bool f_htf_s = not use_htf or close < htf_ema
+
+// ─── RSI extreme filter ───
+bool f_rsi_l = not use_rsi or rsi_v < 70
+bool f_rsi_s = not use_rsi or rsi_v > 30
+
+// ─── Market Structure: major swings (BOS/CHoCH) ───
+float mph = ta.pivothigh(high, swing_len, swing_len)
+float mpl = ta.pivotlow(low,   swing_len, swing_len)
+
+var float major_high = na
+var float major_low  = na
+var int   trend      = 0
+
+if not na(mph)
+    major_high := mph
+if not na(mpl)
+    major_low := mpl
+
+bool bos_up   = not na(major_high) and close > major_high
+bool bos_down = not na(major_low)  and close < major_low
+if bos_up
+    trend := 1
+    major_high := na
+if bos_down
+    trend := -1
+    major_low := na
+
+// ─── IDM Detection ───
+float iph = ta.pivothigh(high, idm_len, idm_len)
+float ipl = ta.pivotlow(low,   idm_len, idm_len)
+
+var float idm_bull_price = na
+var int   idm_bull_bar   = na
+var float idm_bull_sl    = na
+var float idm_bear_price = na
+var int   idm_bear_bar   = na
+var float idm_bear_sl    = na
+
+if trend == 1 and not na(ipl)
+    idm_bull_price := ipl
+    idm_bull_bar   := bar_index - idm_len
+    idm_bull_sl    := low[idm_len]
+if trend == -1 and not na(iph)
+    idm_bear_price := iph
+    idm_bear_bar   := bar_index - idm_len
+    idm_bear_sl    := high[idm_len]
+
+if not na(idm_bull_bar) and bar_index - idm_bull_bar > idm_expire
+    idm_bull_price := na
+    idm_bull_bar   := na
+if not na(idm_bear_bar) and bar_index - idm_bear_bar > idm_expire
+    idm_bear_price := na
+    idm_bear_bar   := na
+
+// ─── ① IDM Sweep: 1-bar ба 2-bar хувилбар ───
+// 1-bar: wick доош шумбаад мөн лаагаараа буцаж дээр хаана
+// 2-bar: өмнөх лаа IDM доор хаагдсан ч энэ лаа буцаж дээр хаана
+bool sw_bull_1 = trend == 1 and not na(idm_bull_price) and low <= idm_bull_price and close > idm_bull_price
+bool sw_bull_2 = sweep_2bar and trend == 1 and not na(idm_bull_price) and low[1] <= idm_bull_price and close[1] <= idm_bull_price and close > idm_bull_price
+bool sw_bear_1 = trend == -1 and not na(idm_bear_price) and high >= idm_bear_price and close < idm_bear_price
+bool sw_bear_2 = sweep_2bar and trend == -1 and not na(idm_bear_price) and high[1] >= idm_bear_price and close[1] >= idm_bear_price and close < idm_bear_price
+
+bool sweep_bull_raw = sw_bull_1 or sw_bull_2
+bool sweep_bear_raw = sw_bear_1 or sw_bear_2
+
+// Sweep-ийн туйлын цэг (2-bar үед хоёр лааны хамгийн гүнийг авна)
+float sweep_low_bull  = sw_bull_1 ? low  : math.min(low, low[1])
+float sweep_high_bear = sw_bear_1 ? high : math.max(high, high[1])
+
+// Sweep гүн: IDM түвшнээс хэр гүн нэвтэрснийг ATR-аар хэмжинэ
+float sweep_depth_bull = not na(idm_bull_price) ? (idm_bull_price - sweep_low_bull)  / atr_v : na
+float sweep_depth_bear = not na(idm_bear_price) ? (sweep_high_bear - idm_bear_price) / atr_v : na
+
+bool sweep_deep_bull = min_sweep_atr <= 0 or (not na(sweep_depth_bull) and sweep_depth_bull >= min_sweep_atr)
+bool sweep_deep_bear = min_sweep_atr <= 0 or (not na(sweep_depth_bear) and sweep_depth_bear >= min_sweep_atr)
+
+bool sweep_bull = sweep_bull_raw and sweep_deep_bull
+bool sweep_bear = sweep_bear_raw and sweep_deep_bear
+
+// ─── ② Confluence Score (0-5) — бие даасан хүчин зүйлүүд ───
+// HTF тал ба sweep гүн нь ЗААВАЛ нөхцөл тул оноонд ОРОХГҮЙ (v8-д
+// давхардаж 2 оноо "үнэгүй" ирдэг байсныг зассан)
+
+// Sweep лааны rejection wick: sweep болсон лааны эсрэг талын сүүл
+// далайцын 40%-иас их бол ханш түвшнээс хүчтэй татгалзсан гэж үзнэ
+f_rej_bull(int off) =>
+    float rng = high[off] - low[off]
+    rng > 0 and (math.min(open[off], close[off]) - low[off]) / rng >= 0.4
+
+f_rej_bear(int off) =>
+    float rng = high[off] - low[off]
+    rng > 0 and (high[off] - math.max(open[off], close[off])) / rng >= 0.4
+
+int sw_off_bull = sw_bull_1 ? 0 : 1
+int sw_off_bear = sw_bear_1 ? 0 : 1
+
+f_score_long(int off) =>
+    int s = 0
+    s += adx_v > 20 ? 1 : 0                  // 1: тренд хүчтэй
+    s += volume > vol_sma ? 1 : 0            // 2: volume өсөлттэй
+    s += close > ema50 ? 1 : 0               // 3: локал EMA50 талд
+    s += f_rej_bull(off) ? 1 : 0             // 4: sweep лаанд rejection wick
+    s += htf_ema > htf_ema[3] ? 1 : 0        // 5: HTF EMA momentum дээшээ
+    s
+
+f_score_short(int off) =>
+    int s = 0
+    s += adx_v > 20 ? 1 : 0
+    s += volume > vol_sma ? 1 : 0
+    s += close < ema50 ? 1 : 0
+    s += f_rej_bear(off) ? 1 : 0
+    s += htf_ema < htf_ema[3] ? 1 : 0
+    s
+
+// ─── POI Detection ───
+f_find_bull_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] < open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+f_find_bear_ob() =>
+    float t = na
+    float b = na
+    for j = 1 to 10
+        if close[j] > open[j]
+            t := high[j]
+            b := low[j]
+            break
+    [t, b]
+
+bool  has_bull_fvg = low > high[2]
+float bfvg_t = has_bull_fvg ? low     : na
+float bfvg_b = has_bull_fvg ? high[2] : na
+bool  has_bear_fvg = high < low[2]
+float sfvg_t = has_bear_fvg ? low[2]  : na
+float sfvg_b = has_bear_fvg ? high    : na
+
+// ─── Setup state machine ───
+var int   setup      = 0
+var float poi_top    = na
+var float poi_bot    = na
+var float setup_sl   = na
+var int   setup_bar  = na
+var int   setup_scr  = 0
+var box   poi_box    = na
+
+// ⑤ Setup refresh: шинэ хүчинтэй sweep нь идэвхтэй setup-ыг ДАРЖ шинэчилнэ
+// (v8-д setup == 0 үед л шинэ setup авдаг байсан → давхар sweep алдагддаг)
+
+// Bull setup идэвхжүүлэх
+int cur_score_l = f_score_long(sw_off_bull)
+if sweep_bull and f_htf_l and f_time and cur_score_l >= min_score
+    [ob_t, ob_b] = f_find_bull_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(bfvg_t) and (na(pt) or bfvg_t < pt)
+        pt := bfvg_t
+        pb := bfvg_b
+    // ③ Fallback: OB/FVG олдоогүй бол sweep зона (wick ↔ IDM түвшин)
+    if use_fb and na(pt)
+        pt := idm_bull_price
+        pb := sweep_low_bull
+    if not na(pt) and pt < close
+        setup     := 1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.min(idm_bull_sl, pb)
+        setup_bar := bar_index
+        setup_scr := cur_score_l
+        idm_bull_price := na
+        if show_idm
+            label.new(bar_index, low, "IDM ⤵ " + str.tostring(cur_score_l) + "/5", color=color.new(col_bull, 20), textcolor=color.white, style=label.style_label_up, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bull, 40), bgcolor=col_poi)
+
+// Bear setup идэвхжүүлэх
+int cur_score_s = f_score_short(sw_off_bear)
+if sweep_bear and f_htf_s and f_time and cur_score_s >= min_score
+    [ob_t, ob_b] = f_find_bear_ob()
+    float pt = na
+    float pb = na
+    if use_ob and not na(ob_t)
+        pt := ob_t
+        pb := ob_b
+    if use_fvg and not na(sfvg_t) and (na(pb) or sfvg_b > pb)
+        pt := sfvg_t
+        pb := sfvg_b
+    if use_fb and na(pb)
+        pt := sweep_high_bear
+        pb := idm_bear_price
+    if not na(pb) and pb > close
+        setup     := -1
+        poi_top   := pt
+        poi_bot   := pb
+        setup_sl  := math.max(idm_bear_sl, pt)
+        setup_bar := bar_index
+        setup_scr := cur_score_s
+        idm_bear_price := na
+        if show_idm
+            label.new(bar_index, high, "IDM ⤴ " + str.tostring(cur_score_s) + "/5", color=color.new(col_bear, 20), textcolor=color.white, style=label.style_label_down, size=size.small)
+        if show_poi
+            box.delete(poi_box)
+            poi_box := box.new(bar_index, pt, bar_index + poi_wait, pb, border_color=color.new(col_bear, 40), bgcolor=col_poi)
+
+// ─── ④ Adaptive reversal candle шалгалт ───
+// Оноо ≥ 4 бол биетийн шаардлага 40% зөөлөрнө — өндөр чанартай
+// setup дээр хатуу reversal хүлээгээд entry алдахаас сэргийлнэ
+float body_req  = setup_scr >= 4 ? rev_body_min * 0.6 : rev_body_min
+float bar_range = high - low
+float bar_body  = math.abs(close - open)
+bool  body_ok   = bar_range > 0 and bar_body / bar_range >= body_req
+bool  rev_bull  = not use_rev_candle or (close > open and body_ok)
+bool  rev_bear  = not use_rev_candle or (close < open and body_ok)
+
+// ─── Entry: POI retest + reversal + RSI ───
+bool long_entry  = false
+bool short_entry = false
+float entry_p    = na
+float sl_p       = na
+
+if setup == 1
+    if bar_index - setup_bar > poi_wait or close < setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if low <= poi_top and close > poi_bot and rev_bull and f_rsi_l
+        long_entry := true
+        entry_p    := math.min(close, poi_top)
+        sl_p       := use_atr_sl ? setup_sl - atr_v * atr_mult : setup_sl
+        setup      := 0
+
+if setup == -1
+    if bar_index - setup_bar > poi_wait or close > setup_sl
+        setup := 0
+        box.delete(poi_box)
+    else if high >= poi_bot and close < poi_top and rev_bear and f_rsi_s
+        short_entry := true
+        entry_p     := math.max(close, poi_bot)
+        sl_p        := use_atr_sl ? setup_sl + atr_v * atr_mult : setup_sl
+        setup       := 0
+
+// ─── TP levels & drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+f_draw(float ep, float sp, float t1, float t2, color c) =>
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    e  = line.new(bar_index, ep, r, ep, color=c,           width=2)
+    s  = line.new(bar_index, sp, r, sp, color=color.red,   width=1, style=line.style_dashed)
+    a  = line.new(bar_index, t1, r, t1, color=color.green, width=1, style=line.style_dashed)
+    b  = line.new(bar_index, t2, r, t2, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    el = label.new(r, ep, "Entry "  + str.tostring(ep, format.mintick), color=color.new(c, 75),          textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl = label.new(r, sp, "SL "     + str.tostring(sp, format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    l1 = label.new(r, t1, "TP1 "    + str.tostring(t1, format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    l2 = label.new(r, t2, "TP2 "    + str.tostring(t2, format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+    [e, s, a, b, el, sl, l1, l2]
+
+float risk_l = long_entry  ? entry_p - sl_p : na
+float tp1_l  = long_entry  ? entry_p + risk_l * rr1 : na
+float tp2_l  = long_entry  ? entry_p + risk_l * rr2 : na
+float risk_s = short_entry ? sl_p - entry_p : na
+float tp1_s  = short_entry ? entry_p - risk_s * rr1 : na
+float tp2_s  = short_entry ? entry_p - risk_s * rr2 : na
+
+if long_entry and risk_l > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_p, tp1_l, tp2_l, col_bull)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+if short_entry and risk_s > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_p, tp1_s, tp2_s, col_bear)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+// ─── Signal labels ───
+plotshape(long_entry,  "LONG",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY\nv9", size=size.normal)
+plotshape(short_entry, "SHORT", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL\nv9", size=size.normal)
+
+plot(idm_bull_price, "Bull IDM", color=color.new(color.rgb(38,200,120), 55), style=plot.style_linebr, linewidth=1)
+plot(idm_bear_price, "Bear IDM", color=color.new(color.rgb(240,80,60),  55), style=plot.style_linebr, linewidth=1)
+
+// ─── Winrate Tracking (TP1 суурьтай — breakeven логик) ───
+// TP1 хүрвэл WIN гэж тооцно. TP1-ийн дараа SL-д унавал ч WIN хэвээр.
+var int   trade_dir  = 0
+var float trade_sl   = na
+var float trade_tp1  = na
+var float trade_tp2  = na
+var int   wins       = 0
+var int   losses     = 0
+var int   tp2_hits   = 0
+var bool  tp1_done   = false
+var int   last_sig   = na
+
+if long_entry and risk_l > 0
+    trade_dir := 1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_l
+    trade_tp2 := tp2_l
+    tp1_done  := false
+    last_sig  := bar_index
+if short_entry and risk_s > 0
+    trade_dir := -1
+    trade_sl  := sl_p
+    trade_tp1 := tp1_s
+    trade_tp2 := tp2_s
+    tp1_done  := false
+    last_sig  := bar_index
+
+if trade_dir == 1 and not (long_entry or short_entry)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == -1 and not (long_entry or short_entry)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 10, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string tr_txt = trend == 1 ? "▲ Bullish" : trend == -1 ? "▼ Bearish" : "○ Neutral"
+    color  tr_col = trend == 1 ? col_bull : trend == -1 ? col_bear : color.gray
+    string st_txt = setup == 1 ? "⏳ POI хүлээж (LONG " + str.tostring(setup_scr) + "/5)" : setup == -1 ? "⏳ POI хүлээж (SHORT " + str.tostring(setup_scr) + "/5)" : trade_dir != 0 ? (trade_dir == 1 ? "📈 LONG нээлттэй" : "📉 SHORT нээлттэй") : "○ Idle"
+    string idm_b  = not na(idm_bull_price) ? str.tostring(idm_bull_price, format.mintick) : "—"
+    string idm_s  = not na(idm_bear_price) ? str.tostring(idm_bear_price, format.mintick) : "—"
+    string wr_txt = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col = na(winrate) ? color.gray : winrate >= 60 ? col_bull : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    string tt_txt = str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits)
+    string sc_txt = "L:" + str.tostring(f_score_long(0)) + "/5  S:" + str.tostring(f_score_short(0)) + "/5"
+    string ls_txt = not na(last_sig) ? str.tostring(bar_index - last_sig) + " бар өмнө" : "—"
+    table.cell(dash, 0, 0, " IDM Pro v9 ⚡", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Trend",     bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, tr_txt,       bgcolor=color.rgb(14,17,28), text_color=tr_col, text_size=size.small)
+    table.cell(dash, 0, 2, " Setup",     bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, st_txt,       bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 3, " Confluence",bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, sc_txt,       bgcolor=color.rgb(14,17,28), text_color=color.rgb(0,200,255), text_size=size.small)
+    table.cell(dash, 0, 4, " Bull IDM",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, idm_b,        bgcolor=color.rgb(10,10,18), text_color=col_bull, text_size=size.small)
+    table.cell(dash, 0, 5, " Bear IDM",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, idm_s,        bgcolor=color.rgb(14,17,28), text_color=col_bear, text_size=size.small)
+    table.cell(dash, 0, 6, " Winrate",   bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 6, wr_txt,       bgcolor=color.rgb(10,10,18), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 7, " Арилжаа",   bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 7, tt_txt,       bgcolor=color.rgb(14,17,28), text_color=color.rgb(100,200,255), text_size=size.small)
+    table.cell(dash, 0, 8, " Сүүлийн сигнал", bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 8, ls_txt,       bgcolor=color.rgb(10,10,18), text_color=color.rgb(200,180,255), text_size=size.small)
+    table.cell(dash, 0, 9, " RSI · ADX", bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 9, str.tostring(rsi_v, "#.#") + " · " + str.tostring(adx_v, "#.#"), bgcolor=color.rgb(14,17,28), text_color=color.rgb(160,175,220), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(long_entry,  "IDM v9 LONG",  "Inducement v9 LONG — {{ticker}} @ {{close}}")
+alertcondition(short_entry, "IDM v9 SHORT", "Inducement v9 SHORT — {{ticker}} @ {{close}}")
+alertcondition(setup != 0 and setup[1] == 0, "IDM v9 Setup", "Inducement v9 SETUP идэвхжлээ — {{ticker}} @ {{close}} (POI хүлээж байна)")
