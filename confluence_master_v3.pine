@@ -1,5 +1,5 @@
 //@version=6
-indicator("Confluence Master v1 — Trend×Momentum×Volume", overlay=true, max_lines_count=300, max_labels_count=300)
+indicator("Confluence Master v3 — Trend×Momentum×Volume", overlay=true, max_lines_count=300, max_labels_count=300)
 
 // ═══════════════════════════════════════════════════════════════════
 //  CONFLUENCE MASTER v1
