@@ -1,0 +1,353 @@
+//@version=6
+indicator("Confluence Master v1 — Trend×Momentum×Volume", overlay=true, max_lines_count=300, max_labels_count=300)
+
+// ═══════════════════════════════════════════════════════════════════
+//  CONFLUENCE MASTER v1
+//  ─ 3 төрлийн индикаторын шилдэг хослол (таны зөвлөгөөний дагуу):
+//
+//  ① TREND багц      : Supertrend + EMA 50/200 alignment
+//  ② MOMENTUM багц   : MACD histogram эргэлт + RSI зөв бүсэд
+//  ③ VOLUME/ENTRY багц: Bollinger доод/дээд бүс + Volume өсөлт
+//
+//  6 нөхцөлийн оноо — default 5/6 биелэхэд л сигнал өгнө.
+//  "Ганц индикаторт итгэхгүй, 2-3 төрлийг нэгтгэ" зарчмын
+//  бүрэн автоматжуулсан хэрэгжилт.
+//
+//  LONG жишээ: Uptrend (ST+EMA) байхад үнэ BB доод бүс рүү
+//  унаж (сайн үнэ), RSI 35-55 (унасан ч overbought биш),
+//  MACD histogram дээшээ эргэж (momentum сэргэж), volume
+//  дэмжсэн үед — 3 төрлийн баталгаатай оролт.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Groups ───
+string G_TREND = "① TREND — Supertrend + EMA"
+string G_MOM   = "② MOMENTUM — MACD + RSI"
+string G_VOL   = "③ VOLUME/ENTRY — Bollinger + Volume"
+string G_SIG   = "④ Signal тохиргоо"
+string G_RISK  = "⑤ Risk"
+string G_VIS   = "⑥ Visual"
+
+// ─── ① Trend Inputs ───
+int   st_len   = input.int(10,    "Supertrend ATR Length", minval=1, group=G_TREND)
+float st_mult  = input.float(3.0, "Supertrend Multiplier", minval=0.5, step=0.5, group=G_TREND)
+int   ema_mid  = input.int(50,    "EMA Mid",  minval=10, group=G_TREND)
+int   ema_big  = input.int(200,   "EMA Big",  minval=50, group=G_TREND)
+
+// ─── ② Momentum Inputs ───
+int   macd_f   = input.int(12, "MACD Fast",   minval=2, group=G_MOM)
+int   macd_s   = input.int(26, "MACD Slow",   minval=5, group=G_MOM)
+int   macd_sig = input.int(9,  "MACD Signal", minval=2, group=G_MOM)
+int   rsi_len  = input.int(14, "RSI Length",  minval=2, group=G_MOM)
+float rsi_lo_l = input.float(35, "RSI Long бүс доод",  minval=20, maxval=50, group=G_MOM)
+float rsi_hi_l = input.float(60, "RSI Long бүс дээд",  minval=50, maxval=75, group=G_MOM)
+
+// ─── ③ Volume/Entry Inputs ───
+int   bb_len   = input.int(20,    "BB Length",     minval=5, group=G_VOL)
+float bb_mult  = input.float(2.0, "BB Multiplier", minval=0.5, step=0.1, group=G_VOL)
+float bb_zone  = input.float(0.35,"BB entry бүс (0-1)", minval=0.1, maxval=0.5, step=0.05, group=G_VOL,
+     tooltip="LONG: үнэ BB доод хэсгийн энэ хувьд байх. 0.35 = доод 35%-д")
+int   vol_len  = input.int(20, "Volume SMA Length", minval=5, group=G_VOL)
+
+// ─── ④ Signal Settings ───
+int   min_score = input.int(5, "Min оноо (6-аас)", minval=3, maxval=6, group=G_SIG,
+     tooltip="6 нөхцөлөөс хамгийн багадаа хэд нь биелэхэд сигнал өгөх. 5-6 = цөөн ч чанартай, 4 = олон ч эрсдэлтэй")
+int   cooldown  = input.int(10, "Сигнал хоорондын зай (bars)", minval=0, maxval=50, group=G_SIG)
+bool  use_kz    = input.bool(false, "Killzone цаг (UTC 07-11, 12-16)", group=G_SIG)
+bool  use_bg_flt = input.bool(true, "Зөвхөн HTF трендийн үед арилжих", group=G_SIG,
+     tooltip="Фоны (HTF) тренд идэвхтэй үед л сигнал өгнө: LONG зөвхөн ногоон фонд, SHORT зөвхөн улаан фонд. Хажуугийн/тренд-гүй зах зээлд сигнал өгөхгүй")
+bool  bg_strong  = input.bool(true, "Хүчтэй тренд шаардах (ADX эрчим)", group=G_SIG,
+     tooltip="ON = зөвхөн ТОД фонд (чиглэл + HTF ADX эрчимтэй) сигнал өгнө. OFF = бүдэг фонд (зөвхөн чиглэл, эрчим шаардахгүй) ч сигнал өгнө")
+float bg_adx_min = input.float(22, "HTF ADX min (тренд эрчим босго)", minval=10, maxval=40, step=1, group=G_SIG,
+     tooltip="HTF ADX энэ утгаас доош = хажуугийн зах гэж үзээд сигнал өгөхгүй. Өсгөвөл илүү хатуу шүүнэ, бууруулбал илүү олон сигнал")
+
+// ─── ⑤ Risk ───
+int   atr_len  = input.int(14,    "ATR Length", minval=1, group=G_RISK)
+float sl_mult  = input.float(1.5, "SL (ATR×)",  minval=0.5, step=0.1, group=G_RISK)
+float rr1      = input.float(1.0, "TP1 R:R",    minval=0.5, step=0.1, group=G_RISK)
+float rr2      = input.float(2.0, "TP2 R:R",    minval=1.0, step=0.5, group=G_RISK)
+
+// ─── ⑥ Visual ───
+color col_bull = input.color(color.rgb(38, 200, 120), "Bull", group=G_VIS)
+color col_bear = input.color(color.rgb(240, 80, 60),  "Bear", group=G_VIS)
+bool  show_st  = input.bool(true, "Supertrend шугам", group=G_VIS)
+bool  show_ema = input.bool(true, "EMA шугамууд",     group=G_VIS)
+bool  show_bb  = input.bool(true, "Bollinger Bands",  group=G_VIS)
+bool  show_dash= input.bool(true, "Dashboard",        group=G_VIS)
+bool  show_bg  = input.bool(true, "Трендийн арын фон", group=G_VIS)
+string bg_tf   = input.timeframe("60", "Фон трендийн timeframe", group=G_VIS,
+     tooltip="Арын фоны трендийг ЭНЭ timeframe-ийн Supertrend+EMA-аар тодорхойлно. 60 = 1 цагийн том чиглэл (5m-ийн жижиг хэлбэлзэлд эргэхгүй). Chart-ийн TF ашиглах бол хоосон болгоно")
+
+// ═══════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+float atr_v = ta.atr(atr_len)
+
+// ─── ① TREND ───
+[st_line, st_dir] = ta.supertrend(st_mult, st_len)
+bool  st_bull = st_dir < 0
+bool  st_bear = st_dir > 0
+float e50  = ta.ema(close, ema_mid)
+float e200 = ta.ema(close, ema_big)
+bool  ema_bull = close > e200 and e50 > e200
+bool  ema_bear = close < e200 and e50 < e200
+
+// ─── ② MOMENTUM ───
+[macd_line, signal_line, hist] = ta.macd(close, macd_f, macd_s, macd_sig)
+bool hist_turn_up   = hist > hist[1] and hist[1] <= hist[2]   // histogram доороо эргэж байна
+bool hist_turn_down = hist < hist[1] and hist[1] >= hist[2]
+bool hist_rising    = hist > hist[1]
+bool hist_falling   = hist < hist[1]
+
+// ─── Трендийн арын фон (HTF Supertrend + EMA50 + ADX эрчим) ───
+// Чиглэл: HTF Supertrend + үнэ EMA50-ийн зөв талд
+// Эрчим:  HTF ADX ≥ босго → жинхэнэ тренд (чоп үед ADX унадаг
+//         тул хажуугийн зах зээлд "хуучин чиглэл" үлдсэн ч сигнал
+//         хаагдана; EMA200 alignment шиг оройтдоггүй)
+f_bg_trend() =>
+    [_, d] = ta.supertrend(st_mult, st_len)
+    [dp, dm, ax] = ta.dmi(14, 14)
+    [d, ax, ta.ema(close, ema_mid), close]
+
+[bg_dir, bg_adx, bg_e50, bg_close] = request.security(syminfo.tickerid, bg_tf, f_bg_trend(), lookahead=barmerge.lookahead_off)
+
+bool bg_bull     = bg_dir < 0 and bg_close > bg_e50
+bool bg_bear     = bg_dir > 0 and bg_close < bg_e50
+bool bg_trending = bg_adx >= bg_adx_min
+bool bg_bull_s   = bg_bull and bg_trending   // хүчтэй bull = чиглэл + эрчим
+bool bg_bear_s   = bg_bear and bg_trending   // хүчтэй bear
+
+color bg_col = not show_bg ? na :
+     bg_bull_s ? color.new(col_bull, 87) :
+     bg_bull   ? color.new(col_bull, 94) :
+     bg_bear_s ? color.new(col_bear, 87) :
+     bg_bear   ? color.new(col_bear, 94) : na
+bgcolor(bg_col, title="Trend Background")
+
+float rsi_v = ta.rsi(close, rsi_len)
+float rsi_lo_s = 100 - rsi_hi_l    // short бүс = long-ийн толь (40-65 default)
+float rsi_hi_s = 100 - rsi_lo_l
+bool rsi_ok_l = rsi_v >= rsi_lo_l and rsi_v <= rsi_hi_l and rsi_v > rsi_v[1]   // зөв бүсэд + өсч байгаа
+bool rsi_ok_s = rsi_v >= rsi_lo_s and rsi_v <= rsi_hi_s and rsi_v < rsi_v[1]
+
+// ─── ③ VOLUME / ENTRY (Bollinger + Volume) ───
+float bb_mid = ta.sma(close, bb_len)
+float bb_dev = ta.stdev(close, bb_len) * bb_mult
+float bb_up  = bb_mid + bb_dev
+float bb_dn  = bb_mid - bb_dev
+float bb_pos = bb_up != bb_dn ? (close - bb_dn) / (bb_up - bb_dn) : 0.5   // 0 = доод band, 1 = дээд band
+bool  bb_low_zone  = bb_pos <= bb_zone          // үнэ доод бүсэд (LONG-д сайн үнэ)
+bool  bb_high_zone = bb_pos >= 1 - bb_zone      // үнэ дээд бүсэд (SHORT-д сайн үнэ)
+
+float vol_sma = ta.sma(volume, vol_len)
+bool  vol_ok  = volume > vol_sma
+
+// ─── Confluence Score (6 нөхцөл) ───
+f_score_long() =>
+    int s = 0
+    s += st_bull ? 1 : 0                // 1. Supertrend bull
+    s += ema_bull ? 1 : 0               // 2. EMA alignment bull
+    s += hist_turn_up or hist_rising ? 1 : 0   // 3. MACD momentum сэргэж
+    s += rsi_ok_l ? 1 : 0               // 4. RSI зөв бүсэд өсч
+    s += bb_low_zone ? 1 : 0            // 5. BB доод бүс (сайн үнэ)
+    s += vol_ok ? 1 : 0                 // 6. Volume дэмжсэн
+    s
+
+f_score_short() =>
+    int s = 0
+    s += st_bear ? 1 : 0
+    s += ema_bear ? 1 : 0
+    s += hist_turn_down or hist_falling ? 1 : 0
+    s += rsi_ok_s ? 1 : 0
+    s += bb_high_zone ? 1 : 0
+    s += vol_ok ? 1 : 0
+    s
+
+int score_l = f_score_long()
+int score_s = f_score_short()
+
+// ─── Filters ───
+int  h_utc = hour(time, "UTC")
+bool f_kz  = not use_kz or ((h_utc >= 7 and h_utc < 11) or (h_utc >= 12 and h_utc < 16))
+
+var int last_sig_bar = -9999
+bool cd_ok = bar_index - last_sig_bar >= cooldown
+
+// HTF трендийн шүүлтүүр: зөвхөн фоны тренд идэвхтэй үед арилжина
+bool f_bg_l = not use_bg_flt or (bg_strong ? bg_bull_s : bg_bull)
+bool f_bg_s = not use_bg_flt or (bg_strong ? bg_bear_s : bg_bear)
+
+// Гол trend нөхцөл заавал (score-д багтсан ч давхар шаардана — чиглэлийн алдаа гаргахгүй)
+bool long_entry  = score_l >= min_score and st_bull and f_bg_l and f_kz and cd_ok and barstate.isconfirmed
+bool short_entry = score_s >= min_score and st_bear and f_bg_s and f_kz and cd_ok and barstate.isconfirmed
+
+if long_entry or short_entry
+    last_sig_bar := bar_index
+
+// ─── Entry / SL / TP ───
+float entry_p = close
+float sl_l    = close - atr_v * sl_mult
+float sl_s    = close + atr_v * sl_mult
+float risk_l  = long_entry  ? entry_p - sl_l : na
+float tp1_l   = long_entry  ? entry_p + risk_l * rr1 : na
+float tp2_l   = long_entry  ? entry_p + risk_l * rr2 : na
+float risk_s  = short_entry ? sl_s - entry_p : na
+float tp1_s   = short_entry ? entry_p - risk_s * rr1 : na
+float tp2_s   = short_entry ? entry_p - risk_s * rr2 : na
+
+// ─── Drawing ───
+var line  e_ln  = na
+var line  sl_ln = na
+var line  t1_ln = na
+var line  t2_ln = na
+var label e_lb  = na
+var label sl_lb = na
+var label t1_lb = na
+var label t2_lb = na
+
+f_draw(float ep, float sp, float t1, float t2, color c) =>
+    line.delete(e_ln)
+    line.delete(sl_ln)
+    line.delete(t1_ln)
+    line.delete(t2_ln)
+    label.delete(e_lb)
+    label.delete(sl_lb)
+    label.delete(t1_lb)
+    label.delete(t2_lb)
+    int r = bar_index + 30
+    e  = line.new(bar_index, ep, r, ep, color=c,           width=2)
+    s  = line.new(bar_index, sp, r, sp, color=color.red,   width=1, style=line.style_dashed)
+    a  = line.new(bar_index, t1, r, t1, color=color.green, width=1, style=line.style_dashed)
+    b  = line.new(bar_index, t2, r, t2, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+    el = label.new(r, ep, "Entry " + str.tostring(ep, format.mintick), color=color.new(c, 75),          textcolor=color.white, style=label.style_label_left, size=size.small)
+    sl = label.new(r, sp, "SL "    + str.tostring(sp, format.mintick), color=color.new(color.red, 75),  textcolor=color.white, style=label.style_label_left, size=size.small)
+    l1 = label.new(r, t1, "TP1 "   + str.tostring(t1, format.mintick), color=color.new(color.green,75), textcolor=color.white, style=label.style_label_left, size=size.small)
+    l2 = label.new(r, t2, "TP2 "   + str.tostring(t2, format.mintick), color=color.new(color.green,85), textcolor=color.white, style=label.style_label_left, size=size.small)
+    [e, s, a, b, el, sl, l1, l2]
+
+if long_entry and risk_l > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_l, tp1_l, tp2_l, col_bull)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+if short_entry and risk_s > 0
+    [a, b, c, d, e, f, g, hh] = f_draw(entry_p, sl_s, tp1_s, tp2_s, col_bear)
+    e_ln := a
+    sl_ln := b
+    t1_ln := c
+    t2_ln := d
+    e_lb := e
+    sl_lb := f
+    t1_lb := g
+    t2_lb := hh
+
+// ─── Plots ───
+plot(show_st ? st_line : na, "Supertrend", color=st_bull ? color.new(col_bull, 30) : color.new(col_bear, 30), linewidth=2, style=plot.style_linebr)
+plot(show_ema ? e50  : na, "EMA50",  color=color.new(color.orange, 30), linewidth=1)
+plot(show_ema ? e200 : na, "EMA200", color=color.new(color.white, 40),  linewidth=2)
+p_up  = plot(show_bb ? bb_up  : na, "BB Up",  color=color.new(color.gray, 60))
+p_dn  = plot(show_bb ? bb_dn  : na, "BB Dn",  color=color.new(color.gray, 60))
+p_mid = plot(show_bb ? bb_mid : na, "BB Mid", color=color.new(color.gray, 50), style=plot.style_circles)
+fill(p_up, p_dn, color=color.new(color.gray, 95))
+
+// Score label дээр гаргах
+plotshape(long_entry,  "LONG",  shape.labelup,   location.belowbar, color.new(color.rgb(38,200,120), 0), textcolor=color.white, text="BUY", size=size.normal)
+plotshape(short_entry, "SHORT", shape.labeldown, location.abovebar, color.new(color.rgb(240,80,60),  0), textcolor=color.white, text="SELL", size=size.normal)
+
+if long_entry
+    label.new(bar_index, low  - atr_v * 2.2, str.tostring(score_l) + "/6", color=color.new(col_bull, 60), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+if short_entry
+    label.new(bar_index, high + atr_v * 2.2, str.tostring(score_s) + "/6", color=color.new(col_bear, 60), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ─── Winrate Tracking (TP1 = WIN + breakeven) ───
+var int   trade_dir  = 0
+var float trade_sl   = na
+var float trade_tp1  = na
+var float trade_tp2  = na
+var int   wins       = 0
+var int   losses     = 0
+var int   tp2_hits   = 0
+var bool  tp1_done   = false
+
+if long_entry and risk_l > 0
+    trade_dir := 1
+    trade_sl  := sl_l
+    trade_tp1 := tp1_l
+    trade_tp2 := tp2_l
+    tp1_done  := false
+if short_entry and risk_s > 0
+    trade_dir := -1
+    trade_sl  := sl_s
+    trade_tp1 := tp1_s
+    trade_tp2 := tp2_s
+    tp1_done  := false
+
+if trade_dir == 1 and not (long_entry or short_entry)
+    if not tp1_done and high >= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and high >= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if low <= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+if trade_dir == -1 and not (long_entry or short_entry)
+    if not tp1_done and low <= trade_tp1
+        tp1_done := true
+        wins     := wins + 1
+    if tp1_done and low <= trade_tp2
+        tp2_hits  := tp2_hits + 1
+        trade_dir := 0
+    else if high >= trade_sl
+        if not tp1_done
+            losses := losses + 1
+        trade_dir := 0
+
+int   total_trades = wins + losses
+float winrate      = total_trades > 0 ? wins / total_trades * 100 : na
+
+// ─── Dashboard ───
+var table dash = table.new(position.top_right, 2, 9, border_width=1, border_color=color.rgb(50,50,70), frame_width=1, frame_color=color.rgb(60,60,90))
+if show_dash and barstate.islast
+    string htf_txt = bg_bull_s ? " · HTF ▲▲" : bg_bull ? " · HTF ▲" : bg_bear_s ? " · HTF ▼▼" : bg_bear ? " · HTF ▼" : " · HTF ○"
+    string tr_txt  = (st_bull and ema_bull ? "▲▲ Хүчтэй Bull" : st_bull ? "▲ Bull" : st_bear and ema_bear ? "▼▼ Хүчтэй Bear" : st_bear ? "▼ Bear" : "○") + htf_txt
+    color  tr_col  = st_bull ? col_bull : col_bear
+    string pos_txt = trade_dir == 1 ? "📈 LONG нээлттэй" : trade_dir == -1 ? "📉 SHORT нээлттэй" : "○ Хүлээж байна"
+    string sc_txt  = "L: " + str.tostring(score_l) + "/6   S: " + str.tostring(score_s) + "/6"
+    color  sc_col  = score_l >= min_score or score_s >= min_score ? color.rgb(255,200,0) : color.rgb(160,175,220)
+    string mom_txt = (hist_rising ? "MACD ↑" : "MACD ↓") + "  RSI " + str.tostring(rsi_v, "#.#")
+    string bb_txt  = "BB " + str.tostring(bb_pos * 100, "#") + "%" + (bb_low_zone ? " (доод ✅)" : bb_high_zone ? " (дээд ✅)" : "")
+    string wr_txt  = total_trades > 0 ? str.tostring(winrate, "#.#") + "%  (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)" : "— арилжаа алга"
+    color  wr_col  = na(winrate) ? color.gray : winrate >= 60 ? col_bull : winrate >= 50 ? color.rgb(255,200,0) : col_bear
+    string tt_txt  = str.tostring(total_trades) + " нийт · TP2: " + str.tostring(tp2_hits)
+    table.cell(dash, 0, 0, " Confluence Master", bgcolor=color.rgb(18,22,38), text_color=color.rgb(0,200,255), text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + " · " + timeframe.period, bgcolor=color.rgb(18,22,38), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 1, " Trend",    bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 1, tr_txt,      bgcolor=color.rgb(14,17,28), text_color=tr_col, text_size=size.small)
+    table.cell(dash, 0, 2, " Оноо",     bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 2, sc_txt,      bgcolor=color.rgb(10,10,18), text_color=sc_col, text_size=size.small)
+    table.cell(dash, 0, 3, " Momentum", bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 3, mom_txt,     bgcolor=color.rgb(14,17,28), text_color=color.rgb(160,175,220), text_size=size.small)
+    table.cell(dash, 0, 4, " Bollinger",bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 4, bb_txt,      bgcolor=color.rgb(10,10,18), text_color=color.rgb(0,200,255), text_size=size.small)
+    table.cell(dash, 0, 5, " Volume",   bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 5, vol_ok ? "✅ дундажаас дээш" : "— сул", bgcolor=color.rgb(14,17,28), text_color=vol_ok ? col_bull : color.gray, text_size=size.small)
+    table.cell(dash, 0, 6, " Байрлал",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 6, pos_txt,     bgcolor=color.rgb(10,10,18), text_color=color.rgb(255,200,0), text_size=size.small)
+    table.cell(dash, 0, 7, " Winrate",  bgcolor=color.rgb(14,17,28), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 7, wr_txt,      bgcolor=color.rgb(14,17,28), text_color=wr_col, text_size=size.small)
+    table.cell(dash, 0, 8, " Арилжаа",  bgcolor=color.rgb(10,10,18), text_color=color.white, text_halign=text.align_left, text_size=size.small)
+    table.cell(dash, 1, 8, tt_txt,      bgcolor=color.rgb(10,10,18), text_color=color.rgb(100,200,255), text_size=size.small)
+
+// ─── Alerts ───
+alertcondition(long_entry,  "Confluence LONG",  "Confluence Master LONG — {{ticker}} @ {{close}}")
+alertcondition(short_entry, "Confluence SHORT", "Confluence Master SHORT — {{ticker}} @ {{close}}")
